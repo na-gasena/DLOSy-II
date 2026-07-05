@@ -1582,7 +1582,7 @@ class VCOLoop {
 
 /**
  * Holds the (fixed 4) independent VCO LOOP voices and fans the shared
- * step-sequencer transport out to each. Each voice has its own enable, curves,
+ * transport-clock ticks out to each. Each voice has its own enable, curves,
  * wave, pattern bank and audio chain, so they can be brought in/out and shaped
  * independently. The rest of the app keeps calling `vcoLoop.*` exactly as before
  * — the manager routes those to the active (UI-focused) voice, or to all voices
@@ -1704,11 +1704,23 @@ export class VCOLoopManager {
     });
   }
 
-  // Copy the active voice's full settings to the clipboard (excluding its live
-  // ON/OFF — pasting shouldn't flip the target's enable state).
+  // Copy the active voice's sound design to the clipboard.
+  //
+  // Only the live sound (curves, wave, volume, STEP/CONT mode, phase, rate) is
+  // captured. Pattern-bank + chain NAVIGATION state (activePattern / patternBank
+  // / chainMode / chainSet) is intentionally excluded: including it made PASTE
+  // restore the copied slot's activePattern and rebuild the bank UI, jumping the
+  // target's view back to that slot — so pasting onto pattern 2 snapped straight
+  // back to pattern 1 and looked like "nothing happened" (and it also clobbered
+  // the target's own saved patterns). Its live ON/OFF is excluded too, so pasting
+  // never flips the target's enable state.
   copyActiveVoice() {
     const s = this.active.getState() as any;
     delete s.enabled;
+    delete s.activePattern;
+    delete s.patternBank;
+    delete s.chainMode;
+    delete s.chainSet;
     this._clipboard = s;
     if (this._pasteBtn) this._pasteBtn.disabled = false;
     if (this._copyBtn) {
@@ -1717,12 +1729,25 @@ export class VCOLoopManager {
     }
   }
 
-  // Paste the clipboard into the active voice (duplicate). Repeatable across tabs.
+  // Paste the clipboard's sound design into the active voice (current pattern).
+  // Repeatable across tabs/patterns; leaves the target's pattern position intact.
   pasteToActiveVoice() {
     if (!this._clipboard) return;
-    this.active.setState(this._clipboard); // setState rebuilds curves/pattern bank fresh
-    this.active.syncCanvasSize();
-    this.active.drawCurve();
+    const v = this.active;
+    const wasPlaying = v.isOscRunning;
+    v.setState(this._clipboard); // applies curves/wave/mode; updates control UI
+    // setState updates data + button states but never touches a running
+    // oscillator. If this voice is currently sounding, rebuild it so the pasted
+    // waveType / STEP-CONT mode take effect immediately, not only after replay.
+    if (wasPlaying) {
+      v.stopContinuousLoop();
+      v.stopOsc();
+      v.startOsc();
+      v.applyAtPosition(v.playheadPosition);
+      if (v.continuousMode) v.startContinuousLoop();
+    }
+    v.syncCanvasSize();
+    v.drawCurve();
     this.updateTabBar();
     emit('state:changed');
   }

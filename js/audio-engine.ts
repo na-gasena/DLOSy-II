@@ -41,7 +41,6 @@ class AudioEngine {
   delayWet: GainNode | null;
   fxInput: GainNode | null = null;
   fxOutput: GainNode | null = null;
-  drumGains: Record<string, GainNode>;
   params: SynthParams;
   noteFreqs: Record<string, number>;
   octaveMultipliers: number[];
@@ -63,9 +62,6 @@ class AudioEngine {
     this.delayNode = null;
     this.delayFeedback = null;
     this.delayWet = null;
-
-    // Drum nodes
-    this.drumGains = {};
 
     // Parameters
     this.params = {
@@ -152,14 +148,6 @@ class AudioEngine {
     this.delayFeedback.connect(this.delayNode);
     this.delayNode.connect(this.delayWet);
     this.delayWet.connect(this.masterGain!);
-
-    // Init drum gains
-    const drumNames = ['bd', 'sd', 'chh', 'ohh', 'clp', 'rim'];
-    drumNames.forEach(name => {
-      this.drumGains[name] = this.ctx!.createGain();
-      this.drumGains[name].gain.value = 0.5;
-      this.drumGains[name].connect(this.masterGain!);
-    });
 
     this.isInitialized = true;
     console.log(`AudioEngine initialized (sampleRate: ${this.ctx!.sampleRate} Hz)`);
@@ -323,184 +311,6 @@ class AudioEngine {
     };
   }
 
-  // ===== DRUMS =====
-
-  playBD() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    const osc = this.ctx!.createOscillator();
-    osc.type = 'sine';
-    osc.frequency.setValueAtTime(230, now);
-    osc.frequency.exponentialRampToValueAtTime(30, now + 0.25);
-
-    const env = this.ctx!.createGain();
-    env.gain.setValueAtTime(this.drumGains['bd'].gain.value, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.4);
-
-    osc.connect(env);
-    env.connect(this.masterGain!);
-    osc.start(now);
-    osc.stop(now + 0.45);
-
-    osc.onended = () => { osc.disconnect(); env.disconnect(); };
-  }
-
-  playSD() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    // Noise burst
-    const bufferSize = this.ctx!.sampleRate * 0.15;
-    const buffer = this.ctx!.createBuffer(1, bufferSize, this.ctx!.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = (Math.random() * 2 - 1) * 0.8;
-    }
-
-    const noise = this.ctx!.createBufferSource();
-    noise.buffer = buffer;
-
-    const env = this.ctx!.createGain();
-    env.gain.setValueAtTime(this.drumGains['sd'].gain.value, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.15);
-
-    // Bandpass for snare character
-    const filter = this.ctx!.createBiquadFilter();
-    filter.type = 'bandpass';
-    filter.frequency.value = 3000;
-    filter.Q.value = 1;
-
-    noise.connect(filter);
-    filter.connect(env);
-    env.connect(this.masterGain!);
-    noise.start(now);
-
-    noise.onended = () => { noise.disconnect(); filter.disconnect(); env.disconnect(); };
-  }
-
-  playCHH() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    const bufferSize = this.ctx!.sampleRate * 0.03;
-    const buffer = this.ctx!.createBuffer(1, bufferSize, this.ctx!.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-
-    const noise = this.ctx!.createBufferSource();
-    noise.buffer = buffer;
-
-    const env = this.ctx!.createGain();
-    env.gain.setValueAtTime(this.drumGains['chh'].gain.value * 0.3, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.03);
-
-    const hpf = this.ctx!.createBiquadFilter();
-    hpf.type = 'highpass';
-    hpf.frequency.value = 8000;
-
-    noise.connect(hpf);
-    hpf.connect(env);
-    env.connect(this.masterGain!);
-    noise.start(now);
-
-    noise.onended = () => { noise.disconnect(); hpf.disconnect(); env.disconnect(); };
-  }
-
-  playOHH() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    const bufferSize = this.ctx!.sampleRate * 0.2;
-    const buffer = this.ctx!.createBuffer(1, bufferSize, this.ctx!.sampleRate);
-    const data = buffer.getChannelData(0);
-    for (let i = 0; i < bufferSize; i++) {
-      data[i] = Math.random() * 2 - 1;
-    }
-
-    const noise = this.ctx!.createBufferSource();
-    noise.buffer = buffer;
-
-    const env = this.ctx!.createGain();
-    env.gain.setValueAtTime(this.drumGains['ohh'].gain.value * 0.3, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
-
-    const hpf = this.ctx!.createBiquadFilter();
-    hpf.type = 'highpass';
-    hpf.frequency.value = 6000;
-
-    noise.connect(hpf);
-    hpf.connect(env);
-    env.connect(this.masterGain!);
-    noise.start(now);
-
-    noise.onended = () => { noise.disconnect(); hpf.disconnect(); env.disconnect(); };
-  }
-
-  playCLP() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    // Clap: multiple noise bursts layered
-    for (let j = 0; j < 3; j++) {
-      const offset = j * 0.01;
-      const bufferSize = this.ctx!.sampleRate * 0.05;
-      const buffer = this.ctx!.createBuffer(1, bufferSize, this.ctx!.sampleRate);
-      const data = buffer.getChannelData(0);
-      for (let i = 0; i < bufferSize; i++) {
-        data[i] = (Math.random() * 2 - 1) * 0.6;
-      }
-
-      const noise = this.ctx!.createBufferSource();
-      noise.buffer = buffer;
-
-      const env = this.ctx!.createGain();
-      env.gain.setValueAtTime(this.drumGains['clp'].gain.value * 0.4, now + offset);
-      env.gain.exponentialRampToValueAtTime(0.001, now + offset + 0.08);
-
-      const bpf = this.ctx!.createBiquadFilter();
-      bpf.type = 'bandpass';
-      bpf.frequency.value = 2500;
-      bpf.Q.value = 2;
-
-      noise.connect(bpf);
-      bpf.connect(env);
-      env.connect(this.masterGain!);
-      noise.start(now + offset);
-
-      noise.onended = () => { noise.disconnect(); bpf.disconnect(); env.disconnect(); };
-    }
-  }
-
-  playRIM() {
-    if (!this.isInitialized) return;
-    const now = this.ctx!.currentTime;
-
-    // Rimshot: high-frequency pulse
-    const osc = this.ctx!.createOscillator();
-    osc.type = 'square';
-    osc.frequency.setValueAtTime(800, now);
-    osc.frequency.exponentialRampToValueAtTime(400, now + 0.02);
-
-    const env = this.ctx!.createGain();
-    env.gain.setValueAtTime(this.drumGains['rim'].gain.value * 0.4, now);
-    env.gain.exponentialRampToValueAtTime(0.001, now + 0.05);
-
-    const hpf = this.ctx!.createBiquadFilter();
-    hpf.type = 'highpass';
-    hpf.frequency.value = 600;
-
-    osc.connect(hpf);
-    hpf.connect(env);
-    env.connect(this.masterGain!);
-    osc.start(now);
-    osc.stop(now + 0.06);
-
-    osc.onended = () => { osc.disconnect(); hpf.disconnect(); env.disconnect(); };
-  }
-
   // ===== PARAMETER SETTERS =====
 
   setParam(name: string, value: any) {
@@ -527,12 +337,6 @@ class AudioEngine {
       case 'waveType':
         // Applied on next note
         break;
-    }
-  }
-
-  setDrumVolume(drumName: string, value: number) {
-    if (this.drumGains[drumName]) {
-      this.drumGains[drumName].gain.value = value;
     }
   }
 

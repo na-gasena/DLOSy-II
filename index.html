@@ -6,7 +6,7 @@
     <title>DLOSy20 - Web Synthesizer</title>
     <meta
       name="description"
-      content="Hardware-like web synthesizer with step sequencer, VCO loop, and drawing mode waveform generation."
+      content="Hardware-like web synthesizer with VCO loop and drawing mode waveform generation."
     />
     <link rel="stylesheet" href="styles/main.css" />
     <link
@@ -44,125 +44,10 @@
 
       <!-- ===== MAIN PANEL ===== -->
       <main id="synth-main">
-        <!-- --- LEFT: Synth Controls --- -->
+        <!-- --- LEFT: Settings --- -->
         <section id="panel-synth" class="panel">
-          <!-- Left Panel Tab Bar -->
-          <div class="left-tabs">
-            <button class="left-tab active" data-left-tab="synth">SYNTH</button>
-            <button class="left-tab" data-left-tab="settings">SETTINGS</button>
-          </div>
-
-          <!-- SYNTH Tab Content (SEQUENCER only) -->
-          <div id="left-tab-synth" class="left-tab-content active">
-            <!-- Waveform Select -->
-            <div class="control-row">
-              <div class="wave-select-group">
-                <span class="label">WAVE</span>
-                <div class="wave-buttons">
-                  <button class="wave-btn active" data-wave="sine">SIN</button>
-                  <button class="wave-btn" data-wave="triangle">TRI</button>
-                  <button class="wave-btn" data-wave="square">SQR</button>
-                  <button class="wave-btn" data-wave="sawtooth">SAW</button>
-                  <button class="wave-btn drawing-btn" data-wave="drawing">
-                    DRAW
-                  </button>
-                </div>
-              </div>
-            </div>
-
-            <!-- Knobs Row: Cutoff, Resonance, Volume -->
-            <div class="control-row knobs-row">
-              <div class="knob-group">
-                <div
-                  id="knob-cutoff"
-                  class="knob"
-                  data-param="cutoff"
-                  data-min="100"
-                  data-max="5000"
-                  data-value="2000"
-                ></div>
-                <span class="label">CUTOFF</span>
-              </div>
-              <div class="knob-group">
-                <div
-                  id="knob-resonance"
-                  class="knob"
-                  data-param="resonance"
-                  data-min="0"
-                  data-max="30"
-                  data-value="5"
-                ></div>
-                <span class="label">RES</span>
-              </div>
-              <div class="knob-group">
-                <div
-                  id="knob-synth-vol"
-                  class="knob"
-                  data-param="synthVol"
-                  data-min="0"
-                  data-max="1"
-                  data-value="0.5"
-                ></div>
-                <span class="label">VOL</span>
-              </div>
-            </div>
-
-            <!-- ADSR Envelope Curve Editor -->
-            <div class="control-row">
-              <div class="adsr-editor-wrapper">
-                <span class="label">ADSR ENVELOPE</span>
-                <div class="adsr-canvas-container">
-                  <canvas id="adsr-canvas" width="240" height="100"></canvas>
-                </div>
-                <div class="adsr-values" id="adsr-values"></div>
-              </div>
-            </div>
-
-            <!-- Octave -->
-            <div class="control-row">
-              <div class="octave-group">
-                <span class="label">OCTAVE</span>
-                <button id="btn-oct-down" class="small-btn">−</button>
-                <div class="led-row" id="oct-leds">
-                  <div class="led"></div>
-                  <div class="led active"></div>
-                  <div class="led"></div>
-                  <div class="led"></div>
-                  <div class="led"></div>
-                </div>
-                <button id="btn-oct-up" class="small-btn">+</button>
-              </div>
-            </div>
-
-            <!-- Delay -->
-            <div class="control-row knobs-row">
-              <div class="knob-group">
-                <div
-                  id="knob-delay-time"
-                  class="knob"
-                  data-param="delayTime"
-                  data-min="0.01"
-                  data-max="0.5"
-                  data-value="0.2"
-                ></div>
-                <span class="label">DLY TIME</span>
-              </div>
-              <div class="knob-group">
-                <div
-                  id="knob-delay-fb"
-                  class="knob"
-                  data-param="delayFeedback"
-                  data-min="0"
-                  data-max="0.8"
-                  data-value="0"
-                ></div>
-                <span class="label">DLY FB</span>
-              </div>
-            </div>
-          </div>
-
-          <!-- SETTINGS Tab Content (always available) -->
-          <div id="left-tab-settings" class="left-tab-content">
+          <!-- SETTINGS Content -->
+          <div id="left-tab-settings" class="left-tab-content active">
             <!-- Tempo & Swing Knobs -->
             <div class="control-row knobs-row">
               <div class="knob-group">
@@ -206,91 +91,17 @@
           </div>
         </section>
 
-        <!-- --- CENTER: Sequencer / Drums (Tab Switch) --- -->
+        <!-- --- CENTER: ARP / EASE / GLYPH (Tab Switch) --- -->
         <section id="panel-center" class="panel">
           <!-- Tab Bar -->
           <div class="center-tabs">
-            <button class="center-tab active" data-tab="sequencer">SEQUENCER</button>
-            <button class="center-tab" data-tab="drums">DRUMS</button>
-            <button class="center-tab" data-tab="arp">ARP</button>
+            <button class="center-tab active" data-tab="arp">ARP</button>
             <button class="center-tab" data-tab="ease">EASE</button>
             <button class="center-tab" data-tab="glyph">GLYPH</button>
           </div>
 
-          <!-- Tab Content: Sequencer -->
-          <div id="center-tab-sequencer" class="center-tab-content active">
-            <!-- Step Sequencer -->
-            <div id="sequencer-section">
-              <div class="panel-title">
-                STEP SEQUENCER
-                <div class="seq-controls">
-                  <button id="btn-seq-toggle" class="small-btn seq-toggle-btn">OFF</button>
-                  <button id="btn-seq-random" class="small-btn" title="Random pattern">RND</button>
-                  <select id="seq-scale-select" class="seq-scale-select" title="Scale">
-                    <option value="major">Major</option>
-                    <option value="minor">Minor</option>
-                    <option value="pentatonic">Penta</option>
-                    <option value="minorPenta">m.Penta</option>
-                    <option value="blues">Blues</option>
-                    <option value="dorian">Dorian</option>
-                    <option value="mixolydian">Mixo</option>
-                    <option value="wholeTone">W.Tone</option>
-                    <option value="chromatic">Chrom</option>
-                  </select>
-                  <select id="seq-oct-select" class="seq-scale-select" title="Octave range">
-                    <option value="3,4,5" selected>C3-C5</option>
-                    <option value="1">C1</option>
-                    <option value="2">C2</option>
-                    <option value="3">C3</option>
-                    <option value="4">C4</option>
-                    <option value="5">C5</option>
-                    <option value="1,2,3">C1-C3</option>
-                    <option value="2,3,4">C2-C4</option>
-                    <option value="4,5,6">C4-C6</option>
-                  </select>
-                  <div class="knob-group knob-group-inline">
-                    <div
-                      id="knob-master-freq"
-                      class="knob"
-                      data-param="masterFreqShift"
-                      data-min="-24"
-                      data-max="24"
-                      data-value="0"
-                    ></div>
-                    <span class="label">PITCH</span>
-                  </div>
-                  <button id="btn-steps-16" class="small-btn step-count-btn active">16</button>
-                  <button id="btn-steps-32" class="small-btn step-count-btn">32</button>
-                </div>
-              </div>
-              <div id="step-pads" class="step-pad-row">
-                <!-- 16 pads generated by JS -->
-              </div>
-            </div>
-
-            <!-- Keyboard -->
-            <div id="keyboard-section">
-              <div class="keyboard" id="keyboard">
-                <!-- Keys generated by JS -->
-              </div>
-            </div>
-          </div>
-
-          <!-- Tab Content: Drums -->
-          <div id="center-tab-drums" class="center-tab-content">
-            <div class="panel-title">
-              DRUMS
-              <div id="midi-out-panel"></div>
-            </div>
-            <div class="drum-layout">
-              <div id="drum-tracks">
-                <!-- Drum tracks with inline controls generated by JS -->
-              </div>
-            </div>
-          </div>
-
           <!-- Tab Content: Arpeggiator -->
-          <div id="center-tab-arp" class="center-tab-content">
+          <div id="center-tab-arp" class="center-tab-content active">
             <!-- Arpeggiator UI generated by JS -->
           </div>
 
@@ -325,8 +136,7 @@
       <footer id="synth-footer">
         <span>DLOSy20 Web Synthesizer</span>
         <span class="footer-hint"
-          >Keyboard: S D F G H J K L = White keys / E R T Y U I = Black
-          keys</span
+          >Space = Play/Stop / Tab = cycle / 1-8 = pattern (VCO LOOP / DRAWING)</span
         >
       </footer>
     </div>

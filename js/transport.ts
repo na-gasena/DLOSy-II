@@ -1,16 +1,16 @@
 /**
  * DLOSy20 - Shared transport / live playback state
  *
- * A passive, dependency-free state holder. The step sequencer writes its play
+ * A passive, dependency-free state holder. The transport clock writes its play
  * position here; the VCO loop writes its live phase here. Other modules READ
  * from it instead of importing each other, which breaks the
- * step-sequencer ⇄ vco-loop and vco-loop ⇄ vco-ease import cycles.
+ * transport-clock ⇄ vco-loop and vco-loop ⇄ vco-ease import cycles.
  *
  * Nothing in this file imports anything — that is the whole point: it sits at
  * the bottom of the dependency graph so every module can depend on it acyclically.
  */
 export const transport = {
-  // --- Step sequencer transport (written by step-sequencer, read by vco-loop) ---
+  // --- Transport (written by transport-clock, read by vco-loop) ---
   isPlaying: false,
   currentStep: 0,
   numSteps: 16,

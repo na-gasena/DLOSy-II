@@ -7,11 +7,8 @@
 // 各モジュールはインスタンスを named export しており、ここで明示的に import する。
 // これにより依存関係が import 文として確定する（旧来の window グローバル方式を廃止）。
 import { audioEngine } from './audio-engine';
-import { adsrEditor } from './adsr-editor';
 import { uiComponents } from './ui-components';
-import { stepSequencer } from './step-sequencer';
-import { midiOut } from './midi-out';
-import { drumMachine } from './drum-machine';
+import { transportClock } from './transport-clock';
 import { vcoLoop } from './vco-loop';
 import { drawingMode } from './drawing-mode';
 import { unimSearch } from './unim-search';
@@ -27,28 +24,17 @@ import { panelLayout } from './panel-layout';
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DLOSy20 Web Synthesizer - Initializing...');
 
-  // Initialize UI Components (knobs, keyboard, buttons)
+  // Initialize UI Components (knobs, transport key)
   uiComponents.init();
 
-  // Initialize ADSR Envelope Curve Editor
-  adsrEditor.init();
-
-  // Initialize Step Sequencer
-  stepSequencer.init();
-
-  // Initialize Drum Machine
-  drumMachine.init();
+  // Initialize Transport Clock (Play/Stop → VCO Loop + Drawing Mode)
+  transportClock.init();
 
   // Initialize VCO Loop
   vcoLoop.init();
 
   // Initialize Drawing Mode
   drawingMode.init();
-
-  // Initialize MIDI OUT
-  if (midiOut) {
-    midiOut.init();
-  }
 
   // Initialize Unim Search
   if (unimSearch) {
@@ -95,21 +81,7 @@ document.addEventListener('DOMContentLoaded', () => {
     panelLayout.init();
   }
 
-  // ===== Left panel tab switching (SYNTH / SETTINGS) =====
-  function switchLeftTab(tabName) {
-    document.querySelectorAll('.left-tab').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.left-tab-content').forEach(c => c.classList.remove('active'));
-    const tab = document.querySelector(`.left-tab[data-left-tab="${tabName}"]`);
-    const content = document.getElementById(`left-tab-${tabName}`);
-    if (tab) tab.classList.add('active');
-    if (content) content.classList.add('active');
-  }
-
-  document.querySelectorAll('.left-tab').forEach(tab => {
-    tab.addEventListener('click', () => switchLeftTab(tab.dataset.leftTab));
-  });
-
-  // ===== Center panel tab switching + left panel sync =====
+  // ===== Center panel tab switching =====
   function onCenterTabSwitch(target) {
     // Update center tab buttons
     document.querySelectorAll('.center-tab').forEach(t => t.classList.remove('active'));
@@ -118,16 +90,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const content = document.getElementById(`center-tab-${target}`);
     if (tabBtn) tabBtn.classList.add('active');
     if (content) content.classList.add('active');
-
-    // Left panel: show SYNTH tab only when SEQUENCER is active
-    const synthTab = document.querySelector('.left-tab[data-left-tab="synth"]');
-    if (target === 'sequencer') {
-      if (synthTab) synthTab.style.display = '';
-      switchLeftTab('synth');
-    } else {
-      if (synthTab) synthTab.style.display = 'none';
-      switchLeftTab('settings');
-    }
 
     // Redraw ARP ADSR canvas after tab becomes visible (resize sync)
     if (arpeggiator && target === 'arp') {

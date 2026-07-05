@@ -6,7 +6,7 @@
  */
 import { audioEngine } from './audio-engine';
 import { uiComponents } from './ui-components';
-import { stepSequencer } from './step-sequencer';
+import { transportClock } from './transport-clock';
 import { vcoLoop } from './vco-loop';
 
 class MidiClockSync {
@@ -112,10 +112,10 @@ class MidiClockSync {
       case 0xFA: // Start
         this.clockCount = 0;
         this.clockTimes = [];
-        // Start the sequencer from the beginning
-        if (stepSequencer) {
-          stepSequencer.currentStep = 0;
-          stepSequencer.isPlaying = true;
+        // Start the transport from the beginning
+        if (transportClock) {
+          transportClock.currentStep = 0;
+          transportClock.isPlaying = true;
           const playBtn = document.getElementById('btn-play');
           if (playBtn) {
             playBtn.classList.add('playing');
@@ -123,30 +123,29 @@ class MidiClockSync {
             if (icon) icon.textContent = '■';
           }
           if (vcoLoop) vcoLoop.onPlayStart();
-          stepSequencer._stopLookahead(); // disable internal scheduler
+          transportClock._stopLookahead(); // disable internal scheduler
         }
         this.updateStatus('▶ Synced');
         break;
 
       case 0xFB: // Continue
-        if (stepSequencer) {
-          stepSequencer.isPlaying = true;
-          stepSequencer._stopLookahead();
+        if (transportClock) {
+          transportClock.isPlaying = true;
+          transportClock._stopLookahead();
         }
         this.updateStatus('▶ Synced');
         break;
 
       case 0xFC: // Stop
-        if (stepSequencer) {
-          stepSequencer.isPlaying = false;
-          stepSequencer._stopLookahead();
+        if (transportClock) {
+          transportClock.isPlaying = false;
+          transportClock._stopLookahead();
           const playBtn = document.getElementById('btn-play');
           if (playBtn) {
             playBtn.classList.remove('playing');
             const icon = playBtn.querySelector('.play-icon');
             if (icon) icon.textContent = '▶';
           }
-          stepSequencer.padElements.forEach(pad => pad.classList.remove('current'));
           if (vcoLoop) vcoLoop.onPlayStop();
         }
         this.updateStatus('■ Stopped');
@@ -179,12 +178,8 @@ class MidiClockSync {
     this.clockCount++;
     if (this.clockCount >= this.clocksPerStep) {
       this.clockCount = 0;
-
-      if (stepSequencer && stepSequencer.isPlaying) {
-        stepSequencer.playCurrentStep();
-        stepSequencer.updatePlaybackUI();
-        stepSequencer.currentStep = (stepSequencer.currentStep + 1) % stepSequencer.numSteps;
-      }
+      // externalTick fires the current step (Drawing + VCO Loop) then advances.
+      if (transportClock) transportClock.externalTick();
     }
   }
 

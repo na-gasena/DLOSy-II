@@ -4,9 +4,6 @@
  * Supports 2 simultaneous MIDI input devices with independent modes and CC maps.
  */
 import { audioEngine } from './audio-engine';
-import { stepSequencer } from './step-sequencer';
-import { midiOut } from './midi-out';
-import { drumMachine } from './drum-machine';
 import { vcoLoop } from './vco-loop';
 import { arpeggiator } from './arpeggiator';
 
@@ -49,7 +46,6 @@ class MidiIn {
   ccMap2: CCMap;
   ccLearnActive2: boolean;
   ccLearnTarget2: CCMapping | null;
-  drumNoteMap: Record<number, string>;
   ccLearnTargets: CCLearnTarget[];
   activeNotes: Map<number, { osc: OscillatorNode; gain: GainNode }>;
   midiAccess: MIDIAccess | null = null;
@@ -75,7 +71,7 @@ class MidiIn {
 
     // ===== Device 1 =====
     this.selectedInput = null;
-    this.mode = 'synth'; // 'synth' | 'drums' | 'arp'
+    this.mode = 'synth'; // 'synth' | 'arp'
 
     // CC mapping IN1: ccNumber → { target, min, max }
     this.ccMap = {
@@ -91,22 +87,12 @@ class MidiIn {
 
     // ===== Device 2 =====
     this.selectedInput2 = null;
-    this.mode2 = 'synth'; // 'synth' | 'drums' | 'arp'
+    this.mode2 = 'synth'; // 'synth' | 'arp'
 
     // CC mapping IN2: independent map
     this.ccMap2 = {};
     this.ccLearnActive2 = false;
     this.ccLearnTarget2 = null;
-
-    // Drum note map (General MIDI-ish)
-    this.drumNoteMap = {
-      36: 'bd',  // C1
-      38: 'sd',  // D1
-      42: 'chh', // F#1
-      46: 'ohh', // A#1
-      39: 'clp', // D#1
-      37: 'rim', // C#1
-    };
 
     // Available CC Learn targets (for UI)
     this.ccLearnTargets = [
@@ -151,28 +137,34 @@ class MidiIn {
     this.connectMIDI();
   }
 
-  // Called after midiAccess is available (from midi-out.js or standalone)
+  // Request MIDI access (standalone — MIDI IN owns its own access now).
   async connectMIDI() {
+    if (!navigator.requestMIDIAccess) {
+      this.updateStatus('MIDI not supported');
+      return;
+    }
     let midiAccess = null;
-
-    // Try to share from midiOut
-    if (midiOut && midiOut.midiAccess) {
-      midiAccess = midiOut.midiAccess;
-    } else {
-      // Standalone init
-      if (!navigator.requestMIDIAccess) {
-        this.updateStatus('MIDI not supported');
-        return;
-      }
-      try {
-        midiAccess = await navigator.requestMIDIAccess();
-      } catch (e) {
-        this.updateStatus('Access denied');
-        return;
-      }
+    try {
+      midiAccess = await navigator.requestMIDIAccess();
+    } catch (e) {
+      this.updateStatus('Access denied');
+      return;
     }
 
     this.midiAccess = midiAccess;
+
+    // --- TEMP DIAGNOSTIC (remove after debugging) ---
+    console.log('[MIDI IN] requestMIDIAccess OK. inputs =', midiAccess.inputs.size,
+                '| enabled =', this.enabled);
+    for (const input of midiAccess.inputs.values()) {
+      console.log('[MIDI IN]   device:', input.name,
+                  '| state:', input.state, '| connection:', input.connection);
+    }
+    if (midiAccess.inputs.size === 0) {
+      console.warn('[MIDI IN] 入力デバイスが1つも見つかりません（未接続 / OS未認識 / 他アプリが占有中の可能性）');
+    }
+    // ------------------------------------------------
+
     this.populateInputs();
     midiAccess.onstatechange = () => this.populateInputs();
     this.updateStatus('Ready');
@@ -260,14 +252,6 @@ class MidiIn {
 
     // Convert MIDI note to frequency
     const freq = 440 * Math.pow(2, (midiNote - 69) / 12);
-    const noteName = this.midiNoteToName(midiNote);
-
-    // Record to sequencer if recording
-    if (stepSequencer && stepSequencer.isPlaying) {
-      stepSequencer.recordAtCurrentStep(freq, noteName);
-    } else if (stepSequencer) {
-      stepSequencer.recordStep(freq, noteName);
-    }
 
     // Play audio with proper note-on/off tracking.
     // (旧コードは audioEngine.playNote(freq, noteName) を呼んでいたが、playNote は
@@ -325,33 +309,6 @@ class MidiIn {
     }, rel * 1000 + 50);
 
     this.activeNotes.delete(midiNote);
-  }
-
-  midiNoteToName(note: number) {
-    const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B'];
-    const octave = Math.floor(note / 12) - 1;
-    return names[note % 12] + octave;
-  }
-
-  // ===== DRUMS MODE =====
-
-  triggerDrum(midiNote: number) {
-    const trackKey = this.drumNoteMap[midiNote];
-    if (!trackKey || !audioEngine) return;
-
-    const track = drumMachine?.tracks[trackKey];
-    if (!track) return;
-
-    // Play drum sound
-    const playMethod = (audioEngine as any)[drumMachine.trackDefs.find(d => d.key === trackKey)?.playMethod ?? ""];
-    if (playMethod) {
-      playMethod.call(audioEngine, track.volume);
-    }
-
-    // Also send MIDI out
-    if (midiOut) {
-      midiOut.sendDrumNote(trackKey);
-    }
   }
 
   // ===== CC HANDLING (IN1) =====
@@ -450,8 +407,6 @@ class MidiIn {
     } else if (param === 'masterVol' && audioEngine.masterGain) {
       audioEngine.params.masterVol = val;
       audioEngine.masterGain.gain.value = val;
-    } else if (param === 'masterFreqShift' && stepSequencer) {
-      stepSequencer.masterFreqShift = val;
     } else if (param.startsWith('arp') && arpeggiator) {
       const elId = param === 'arpVol' ? 'arp-vol-slider' :
                    param === 'arpFreq' ? 'arp-freq-slider' :
@@ -716,6 +671,21 @@ class MidiIn {
 
     buildOptions(select);
     buildOptions(select2);
+
+    // --- TEMP DIAGNOSTIC (remove after debugging) ---
+    // enabled ゲートやデバイス選択に関係なく、全入力の生メッセージをログする。
+    // これで「ハードから信号が来ているか」を確実に確認できる。
+    this.midiAccess.inputs.forEach(input => {
+      if ((input as any)._dbgAttached) return;
+      (input as any)._dbgAttached = true;
+      try { input.open(); } catch (e) {}
+      input.addEventListener('midimessage', (ev: MIDIMessageEvent) => {
+        console.log('[MIDI IN RAW]', input.name, Array.from(ev.data!),
+                    '| enabled =', this.enabled,
+                    '| selectedIN1 =', this.selectedInput?.name ?? '(none)');
+      });
+    });
+    // ------------------------------------------------
 
     // Restore device by saved name (from preset load)
     if (this._pendingDeviceName) {

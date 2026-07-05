@@ -16,11 +16,8 @@
   --accent-primary: #e84545;
   --accent-secondary: #f5a623;
   --accent-green: #44d62c;
-  --accent-blue: #4a9eff;
   --accent-cyan: #00e5ff;
   --led-off: #2a2a30;
-  --led-on: #e84545;
-  --led-step: #f5a623;
 
   /* Text */
   --text-primary: #e0e0e4;
@@ -35,12 +32,6 @@
   --btn-surface: linear-gradient(180deg, #3a3a42, #2a2a30);
   --btn-pressed: linear-gradient(180deg, #2a2a30, #3a3a42);
   --btn-active-glow: 0 0 10px rgba(232, 69, 69, 0.5);
-
-  /* Keyboard */
-  --key-white: linear-gradient(180deg, #d8d8dc, #b8b8bc);
-  --key-white-pressed: linear-gradient(180deg, #a8a8ac, #989898);
-  --key-black: linear-gradient(180deg, #2a2a2e, #1a1a1e);
-  --key-black-pressed: linear-gradient(180deg, #3a3a3e, #2a2a2e);
 
   /* Spacing */
   --panel-padding: 16px;
@@ -249,15 +240,6 @@ body {
   justify-content: space-between;
 }
 
-.badge {
-  font-size: 8px;
-  background: var(--accent-blue);
-  color: #fff;
-  padding: 2px 6px;
-  border-radius: 3px;
-  letter-spacing: 0.5px;
-}
-
 /* ===== MAIN LAYOUT ===== */
 #synth-main {
   display: grid;
@@ -305,25 +287,6 @@ body {
 #panel-center::-webkit-scrollbar-thumb {
   background: var(--border-panel);
   border-radius: 2px;
-}
-
-/* Prevent horizontal overflow in center panel content */
-#center-tab-sequencer,
-#center-tab-drums {
-  max-width: 100%;
-  overflow-x: hidden;
-}
-
-.step-led-row,
-.step-button-row {
-  min-width: 0;
-  flex-shrink: 1;
-}
-
-.step-led-row .step-led,
-.step-button-row .step-btn {
-  flex-shrink: 1;
-  min-width: 0;
 }
 
 #panel-bottom {
@@ -386,59 +349,6 @@ body {
   box-shadow: 0 0 6px rgba(232, 69, 69, 0.5);
 }
 
-/* ===== WAVE SELECT ===== */
-.wave-select-group {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-}
-
-.wave-buttons {
-  display: flex;
-  gap: 4px;
-}
-
-.wave-btn {
-  width: 42px;
-  height: 28px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: 3px;
-  transition: all 0.15s;
-  letter-spacing: 0.5px;
-}
-
-.wave-btn:hover {
-  border-color: var(--accent-primary);
-  color: var(--text-primary);
-}
-
-.wave-btn.active {
-  background: var(--accent-primary);
-  color: #fff;
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 10px rgba(232, 69, 69, 0.4);
-}
-
-.drawing-btn.active {
-  background: var(--accent-cyan);
-  border-color: var(--accent-cyan);
-  box-shadow: 0 0 10px rgba(0, 229, 255, 0.4);
-}
-
-/* ===== OCTAVE ===== */
-.octave-group {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  justify-content: center;
-}
-
 /* ===== SMALL BUTTONS ===== */
 .small-btn {
   width: 28px;
@@ -463,29 +373,7 @@ body {
   box-shadow: inset 0 2px 4px rgba(0, 0, 0, 0.4);
 }
 
-/* ===== LEDs ===== */
-.led-row {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-}
-
-.led {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
-  background: var(--led-off);
-  box-shadow: inset 0 1px 2px rgba(0, 0, 0, 0.5);
-  transition: all 0.1s;
-}
-
-.led.active {
-  background: var(--led-on);
-  box-shadow:
-    0 0 8px rgba(232, 69, 69, 0.7),
-    0 0 2px rgba(232, 69, 69, 1);
-}
-
+/* ===== MIDI INDICATOR LED ===== */
 .midi-indicator {
   width: 10px;
   height: 10px;
@@ -503,212 +391,11 @@ body {
     0 0 4px rgba(68, 214, 44, 1);
 }
 
-/* ===== STEP SEQUENCER ===== */
-#sequencer-section {
-  margin-bottom: 16px;
-}
-
-.seq-controls {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-family: var(--font-display);
-}
-
-.step-num {
-  font-size: 14px;
-  color: var(--text-value);
-  min-width: 24px;
-  text-align: center;
-}
-
-/* ===== STEP SEQUENCER — Integrated Pad UI ===== */
-.step-pad-row {
-  display: flex;
-  gap: 3px;
-  justify-content: center;
-  flex-wrap: wrap;
-  max-width: calc(16 * 48px);
-  margin: 0 auto 8px;
-}
-
-.step-pad {
-  flex: 0 0 calc(100% / 16 - 3px);
-  max-width: 46px;
-  min-width: 24px;
-  height: 60px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  border-radius: 4px;
-  cursor: ns-resize;
-  user-select: none;
-  position: relative;
-  transition: border-color 0.1s, background 0.1s, box-shadow 0.1s;
-}
-
-.step-pad .pad-led {
-  width: 100%;
-  height: 4px;
-  border-radius: 4px 4px 0 0;
-  background: transparent;
-  transition: background 0.1s;
-}
-
-.step-pad.on .pad-led {
-  background: var(--led-step);
-  box-shadow: 0 0 4px rgba(245, 166, 35, 0.5);
-}
-
-.step-pad.current .pad-led {
-  background: var(--accent-green) !important;
-  box-shadow: 0 0 6px rgba(68, 214, 44, 0.7);
-}
-
-.step-pad .pad-note {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-  pointer-events: none;
-}
-
-.step-pad.on .pad-note {
-  color: #fff;
-  font-weight: bold;
-}
-
-.step-pad .pad-wave {
-  font-size: 10px;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-  opacity: 0.5;
-  pointer-events: none;
-  line-height: 1;
-}
-
-.step-pad.on .pad-wave {
-  color: rgba(255,255,255,0.7);
-  opacity: 1;
-}
-
-.step-pad .pad-num {
-  font-size: 7px;
-  font-family: var(--font-mono);
-  color: var(--text-secondary);
-  opacity: 0.4;
-  padding-bottom: 2px;
-  pointer-events: none;
-}
-
-.step-pad.on {
-  background: var(--accent-primary);
-  border-color: var(--accent-primary);
-  box-shadow: 0 0 4px rgba(232, 69, 69, 0.25);
-}
-
-.step-pad.editing {
-  border-color: #00e5ff;
-  box-shadow: 0 0 6px rgba(0, 229, 255, 0.4);
-}
-
-.step-pad.dragging {
-  border-color: #f5a623;
-  box-shadow: 0 0 8px rgba(245, 166, 35, 0.5);
-}
-
-.step-pad.dragging .pad-note {
-  font-size: 11px;
-  color: #f5a623;
-  font-weight: bold;
-}
-
-/* Drag direction hint */
-.pad-drag-hint {
-  position: absolute;
-  top: 50%;
-  right: 2px;
-  transform: translateY(-50%);
-  font-size: 10px;
-  color: #f5a623;
-  opacity: 0.7;
-  pointer-events: none;
-  animation: drag-hint-bounce 0.8s ease-in-out infinite;
-  display: none;
-}
-
-@keyframes drag-hint-bounce {
-  0%, 100% { transform: translateY(-50%); }
-  50% { transform: translateY(calc(-50% - 3px)); }
-}
-
-.step-pad:hover {
-  border-color: var(--accent-primary);
-}
-
-/* Drag tooltip */
-.step-pad-tooltip {
-  position: fixed;
-  background: rgba(0, 0, 0, 0.92);
-  color: #f5a623;
-  font-family: var(--font-mono);
-  font-size: 14px;
-  font-weight: bold;
-  padding: 4px 10px;
-  border-radius: 4px;
-  border: 1px solid #f5a623;
-  pointer-events: none;
-  z-index: 200;
-  transform: translate(-50%, -130%);
-  white-space: nowrap;
-}
-
-/* Scale select */
-.seq-scale-select {
-  appearance: none;
-  -webkit-appearance: none;
-  background: var(--bg-panel-inset);
-  color: var(--text-primary);
-  border: 1px solid var(--border-panel);
-  font-family: var(--font-mono);
-  font-size: 10px;
-  padding: 2px 4px;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-/* Step count toggle */
+/* Step count toggle (used by Drawing Mode 8/16 slot buttons) */
 .step-count-btn.active {
   background: var(--accent-primary);
   color: #fff;
   border-color: var(--accent-primary);
-}
-
-/* Inline knob (compact, for use inside control bars) */
-.knob-group-inline {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 2px;
-}
-
-.knob-group-inline .knob {
-  width: 32px;
-  height: 32px;
-}
-
-.knob-group-inline .knob::after {
-  height: 10px;
-  top: 4px;
-}
-
-.knob-group-inline .label {
-  font-size: 8px;
 }
 
 /* ===== VCO LOOP Curve Presets ===== */
@@ -744,15 +431,6 @@ body {
   color: #fff;
 }
 
-/* Drum grid also wraps at 16 */
-.drum-track {
-  flex-wrap: wrap;
-}
-
-.drum-step {
-  flex: 0 0 auto;
-}
-
 /* VCO Volume Slider */
 .vco-vol-group {
   display: flex;
@@ -768,204 +446,7 @@ body {
   cursor: pointer;
 }
 
-/* VCO Draw Slot Sequencing */
-.vco-draw-seq-panel {
-  margin-top: 8px;
-  padding: 6px;
-  border-top: 1px solid var(--border-panel);
-}
-
-.vco-draw-seq-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-}
-
-.vco-draw-seq-label {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--text-secondary);
-}
-
-.vco-draw-seq-grid {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 3px;
-  opacity: 0.4;
-  max-width: calc(16 * 26px);
-}
-
-.vco-draw-seq-cell {
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-family: var(--font-mono);
-  font-size: 10px;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  color: var(--text-secondary);
-  border-radius: 3px;
-  cursor: pointer;
-  transition: all 0.1s;
-}
-
-.vco-draw-seq-cell:hover {
-  border-color: var(--accent-secondary);
-  color: var(--accent-secondary);
-}
-
-/* ===== KEYBOARD ===== */
-#keyboard-section {
-  padding: 8px 0;
-}
-
-.keyboard {
-  display: flex;
-  justify-content: center;
-}
-
-.keyboard-wrapper {
-  position: relative;
-  height: 120px;
-}
-
-.key-white {
-  height: 120px;
-  background: var(--key-white);
-  border: 1px solid #999;
-  border-radius: 0 0 5px 5px;
-  cursor: pointer;
-  z-index: 1;
-  transition: all 0.08s;
-  box-shadow:
-    0 4px 6px rgba(0, 0, 0, 0.3),
-    inset 0 -3px 0 rgba(0, 0, 0, 0.1);
-}
-
-.key-white:active,
-.key-white.pressed {
-  background: var(--key-white-pressed);
-  box-shadow:
-    0 2px 3px rgba(0, 0, 0, 0.3),
-    inset 0 2px 4px rgba(0, 0, 0, 0.15);
-  transform: translateY(2px);
-}
-
-.key-black {
-  height: 76px;
-  background: var(--key-black);
-  border: 1px solid #111;
-  border-radius: 0 0 4px 4px;
-  cursor: pointer;
-  position: absolute;
-  top: 0;
-  z-index: 2;
-  transition: all 0.08s;
-  box-shadow:
-    0 4px 6px rgba(0, 0, 0, 0.5),
-    inset 0 -2px 0 rgba(255, 255, 255, 0.05);
-}
-
-.key-black:active,
-.key-black.pressed {
-  background: var(--key-black-pressed);
-  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.4);
-  transform: translateY(2px);
-}
-
-/* ===== DRUM MACHINE ===== */
-.drum-layout {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-#center-tab-drums .panel-title {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  color: var(--accent-secondary);
-}
-
-.drum-track {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  margin-bottom: 2px;
-}
-
-.drum-master-row {
-  margin-bottom: 4px;
-}
-
-.drum-mute-btn {
-  width: 32px;
-  flex-shrink: 0;
-}
-
-.drum-vol-slider {
-  width: 36px;
-  flex-shrink: 0;
-  height: 4px;
-  accent-color: var(--accent-secondary);
-  cursor: pointer;
-}
-
-.drum-step {
-  flex: 1;
-  aspect-ratio: 1;
-  min-width: 14px;
-  max-width: 32px;
-  background: var(--bg-panel-inset);
-  border: 1px solid var(--border-panel);
-  border-radius: 3px;
-  cursor: pointer;
-  transition: all 0.1s;
-}
-
-.drum-step:hover {
-  border-color: var(--accent-secondary);
-}
-
-.drum-step.on {
-  background: var(--accent-secondary);
-  border-color: var(--accent-secondary);
-  box-shadow: 0 0 6px rgba(245, 166, 35, 0.4);
-}
-
-.drum-step.playing {
-  box-shadow: 0 0 10px rgba(232, 69, 69, 0.6);
-}
-
-.drum-mute-btn {
-  padding: 3px 6px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  color: var(--text-primary);
-  cursor: pointer;
-  border-radius: 3px;
-  transition: all 0.15s;
-}
-
-.drum-mute-btn.muted {
-  opacity: 0.3;
-  color: var(--text-secondary);
-}
-
-/* MIDI OUT Controls */
-.midi-out-controls {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-family: var(--font-mono);
-  font-size: 10px;
-}
-
+/* ===== MIDI SELECT (shared: MIDI IN / CLK / audio settings) ===== */
 .midi-select {
   background: var(--bg-panel-inset);
   color: var(--text-primary);
@@ -1002,93 +483,6 @@ body {
   color: #ff9977;
   white-space: pre-wrap;
   line-height: 1.5;
-}
-
-.drum-track {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  margin-bottom: 6px;
-}
-
-.drum-track-label {
-  font-family: var(--font-display);
-  font-size: 10px;
-  color: var(--text-secondary);
-  width: 32px;
-  text-align: right;
-}
-
-.drum-step {
-  width: 10px;
-  height: 10px;
-  border-radius: 2px;
-  background: var(--led-off);
-  cursor: pointer;
-  transition: all 0.1s;
-}
-
-.drum-step.on {
-  background: var(--accent-secondary);
-  box-shadow: 0 0 6px rgba(245, 166, 35, 0.5);
-}
-
-.drum-mute-btn {
-  width: 36px;
-  height: 22px;
-  font-family: var(--font-mono);
-  font-size: 8px;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: 2px;
-}
-
-.drum-mute-btn.muted {
-  background: #5a2222;
-  color: var(--accent-primary);
-  border-color: var(--accent-primary);
-}
-
-.drum-mutes {
-  display: flex;
-  gap: 6px;
-  margin-top: 8px;
-  justify-content: center;
-}
-
-/* ===== ADSR ENVELOPE EDITOR ===== */
-.adsr-editor-wrapper {
-  width: 100%;
-}
-
-.adsr-editor-wrapper > .label {
-  display: block;
-  margin-bottom: 4px;
-}
-
-.adsr-canvas-container {
-  border: 1px solid var(--border-panel);
-  border-radius: 4px;
-  overflow: hidden;
-  background: var(--bg-panel-inset);
-}
-
-.adsr-canvas-container canvas {
-  display: block;
-  width: 100%;
-  height: 80px;
-  cursor: crosshair;
-}
-
-.adsr-values {
-  font-family: var(--font-mono);
-  font-size: 9px;
-  color: var(--text-secondary);
-  margin-top: 3px;
-  text-align: center;
-  letter-spacing: 0.5px;
 }
 
 /* ===== VCO LOOP ===== */
@@ -1705,25 +1099,6 @@ body {
   color: var(--text-secondary);
 }
 
-/* ===== ANIMATIONS ===== */
-@keyframes pulse-led {
-  0%,
-  100% {
-    opacity: 1;
-  }
-  50% {
-    opacity: 0.6;
-  }
-}
-
-.led.active {
-  animation: pulse-led 0.8s ease-in-out infinite;
-}
-
-.step-led.current {
-  animation: pulse-led 0.4s ease-in-out infinite;
-}
-
 /* ===== RESIZABLE / REORDERABLE PANEL LAYOUT ===== */
 .panel-resize-handle {
   position: relative;
@@ -1807,6 +1182,64 @@ body.resizing-row {
   font-size: 15px;
 }
 
+/* ===== PANEL VISIBILITY TOGGLES (header) ===== */
+.panel-toggle-bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.panel-toggle-label {
+  font-family: var(--font-display);
+  font-size: 9px;
+  letter-spacing: 1.5px;
+  color: var(--text-label);
+}
+
+.panel-toggle-chip {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.5px;
+  padding: 4px 10px;
+  background: var(--btn-surface);
+  border: 1px solid var(--border-panel);
+  color: var(--text-secondary);
+  border-radius: 3px;
+  cursor: pointer;
+  transition: all 0.12s;
+  opacity: 0.5;
+}
+
+.panel-toggle-chip:hover {
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+}
+
+/* Active chip = its panel is currently shown. */
+.panel-toggle-chip.active {
+  opacity: 1;
+  color: #fff;
+  border-color: var(--accent-primary);
+  background: linear-gradient(180deg, #4a2a2e, #3a2226);
+  box-shadow: 0 0 8px rgba(232, 69, 69, 0.35);
+}
+
+/* When every secondary panel is hidden, drop the top row and let the
+   VCO LOOP + DRAWING MODE row grow to fill the viewport. */
+body.top-collapsed #synth-main {
+  display: none;
+}
+
+body.top-collapsed #panel-bottom {
+  flex: 1 1 auto;
+  height: auto;
+}
+
+body.top-collapsed .panel-resize-handle.row-handle {
+  display: none;
+}
+
 /* ===== RESPONSIVE ===== */
 @media (max-width: 1024px) {
   body,
@@ -1844,20 +1277,6 @@ body.resizing-row {
 
   .panel-resize-handle {
     display: none;
-  }
-}
-
-@media (max-width: 768px) {
-  .keyboard {
-    height: 80px;
-  }
-  .key-white {
-    width: 36px;
-    height: 80px;
-  }
-  .key-black {
-    width: 24px;
-    height: 50px;
   }
 }
 
@@ -2722,43 +2141,7 @@ body.resizing-row {
   width: 60px;
 }
 
-/* ===== LEFT PANEL TABS ===== */
-.left-tabs {
-  display: flex;
-  gap: 2px;
-  padding: 4px 6px;
-  border-bottom: 1px solid var(--border);
-}
-
-.left-tab {
-  flex: 1;
-  background: var(--bg-dark);
-  color: var(--text-secondary);
-  border: 1px solid var(--border);
-  border-bottom: 2px solid transparent;
-  padding: 6px 8px;
-  font-family: var(--font-display);
-  font-size: 11px;
-  letter-spacing: 1.5px;
-  cursor: pointer;
-  border-radius: 4px 4px 0 0;
-  transition: all 0.15s;
-  text-align: center;
-}
-
-.left-tab.active {
-  background: var(--bg-panel);
-  color: var(--accent-primary);
-  border-color: var(--accent-primary);
-  border-bottom: 2px solid var(--accent-primary);
-}
-
-.left-tab:hover:not(.active) {
-  color: var(--text-primary);
-  border-bottom: 2px solid var(--text-secondary);
-  background: rgba(255,255,255,0.03);
-}
-
+/* ===== LEFT PANEL (SETTINGS) CONTENT ===== */
 .left-tab-content {
   display: none;
 }
