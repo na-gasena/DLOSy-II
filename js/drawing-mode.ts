@@ -8,11 +8,17 @@ import { vcoLoop } from './vco-loop';
 import { arpeggiator } from './arpeggiator';
 import { registerSerializable } from './registry';
 import { emit } from './events';
+import {
+  curveShape, hitHandlePx, dragHandle, resetHandleAtPx, drawHandles, copyPoints,
+  segmentAtX,
+} from './curve-editor';
 
 interface DrawPoint {
   x: number;
   y: number;
   newStroke?: boolean;
+  /** Segment curvature (scan-profile points only; see curve-editor.ts) */
+  c?: number;
 }
 
 interface DrawSlot {
@@ -57,6 +63,10 @@ class DrawingMode {
   _scanCanvas: HTMLCanvasElement | null = null;
   _scanCtx: CanvasRenderingContext2D | null = null;
   _scanDragIdx: number | null = null;
+  // Curvature-handle drag: segment index whose bend is being edited
+  _scanHandleDrag: number | null = null;
+  // Segment whose handle is revealed on hover (null = none)
+  _scanHoverSeg: number | null = null;
   _previewRO: ResizeObserver | null = null;
 
   constructor() {
@@ -251,7 +261,7 @@ class DrawingMode {
         points: slot.points.map(p => ({ x: p.x, y: p.y })),
         waveX: [...slot.waveX],
         waveY: [...slot.waveY],
-        scanProfile: ((slot as any).scanProfile ?? this._defaultScanProfile()).map((p: any) => ({ x: p.x, y: p.y })),
+        scanProfile: copyPoints((slot as any).scanProfile ?? this._defaultScanProfile()),
         scanRippleRate: (slot as any).scanRippleRate || 0,
         scanRippleDepth: (slot as any).scanRippleDepth || 0,
       }));
@@ -689,7 +699,7 @@ class DrawingMode {
 
   drawPoint(pos: { x: number; y: number }) {
     const ctx = this.ctx2d!;
-    ctx.fillStyle = '#00e5ff';
+    ctx.fillStyle = '#22d9f2';
     ctx.beginPath();
     ctx.arc(pos.x, pos.y, 2, 0, Math.PI * 2);
     ctx.fill();
@@ -701,7 +711,7 @@ class DrawingMode {
     if (pts.length < 2) return;
 
     const prev = pts[pts.length - 2];
-    ctx.strokeStyle = '#00e5ff';
+    ctx.strokeStyle = '#22d9f2';
     ctx.lineWidth = 2;
     ctx.shadowColor = 'rgba(0, 229, 255, 0.5)';
     ctx.shadowBlur = 4;
@@ -739,7 +749,7 @@ class DrawingMode {
     const pts = this.slots[this.activeSlot].points;
     if (pts.length === 0) return;
 
-    ctx.strokeStyle = '#00e5ff';
+    ctx.strokeStyle = '#22d9f2';
     ctx.lineWidth = 2;
     ctx.shadowColor = 'rgba(0, 229, 255, 0.5)';
     ctx.shadowBlur = 4;
@@ -857,7 +867,8 @@ class DrawingMode {
       }
       const range = right.x - left.x;
       const lt = range > 0 ? (t - left.x) / range : 0;
-      base = left.y + (right.y - left.y) * lt;
+      // Per-segment curvature (curve-editor.ts) — linear when c is absent
+      base = left.y + (right.y - left.y) * curveShape(lt, left.c);
     }
     if (depth > 0 && rate > 0) {
       base += depth * Math.sin(2 * Math.PI * rate * t);
@@ -932,9 +943,17 @@ class DrawingMode {
     this._scanDragIdx = null;
     canvas.addEventListener('mousedown', (e) => this._scanMouseDown(e));
     canvas.addEventListener('mousemove', (e) => this._scanMouseMove(e));
-    canvas.addEventListener('mouseup', () => { this._scanDragIdx = null; });
-    canvas.addEventListener('mouseleave', () => { this._scanDragIdx = null; });
+    canvas.addEventListener('mouseup', () => { this._scanDragIdx = null; this._scanHandleDrag = null; });
+    canvas.addEventListener('mouseleave', () => {
+      this._scanDragIdx = null; this._scanHandleDrag = null;
+      if (this._scanHoverSeg !== null) { this._scanHoverSeg = null; this.drawScanCurve(); }
+    });
     canvas.addEventListener('dblclick', (e) => this._scanDblClick(e));
+    // Right-click = delete point (unified across all curve editors)
+    canvas.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this._scanDblClick(e);
+    });
     this.drawScanCurve();
     this._syncRippleUI();
   }
@@ -971,7 +990,7 @@ class DrawingMode {
     ctx.beginPath(); ctx.moveTo(0, h); ctx.lineTo(w, 0); ctx.stroke();
 
     // Effective scan curve (profile + ripple). This is the actual φ(t) used.
-    ctx.strokeStyle = '#00e5ff';
+    ctx.strokeStyle = '#22d9f2';
     ctx.lineWidth = 2;
     ctx.beginPath();
     for (let px = 0; px <= w; px++) {
@@ -980,9 +999,14 @@ class DrawingMode {
       if (px === 0) ctx.moveTo(px, y); else ctx.lineTo(px, y);
     }
     ctx.stroke();
+
+    // Curvature handles — revealed on hover / drag; subtle hint on bent ones
+    drawHandles(ctx, prof, (x) => x * w, (y) => h - y * h,
+      { activeSeg: this._scanHandleDrag ?? this._scanHoverSeg, size: 3.5 });
+
     // Points
     prof.forEach(pt => {
-      ctx.fillStyle = '#f5a623';
+      ctx.fillStyle = '#ffb454';
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 1.5;
       ctx.beginPath();
@@ -1003,6 +1027,13 @@ class DrawingMode {
   _scanMouseDown(e: MouseEvent) {
     const prof = this._activeScanProfile();
     const c = this._scanCoords(e);
+    // Curvature handle first (it sits on the curve between points)
+    const rect = this._scanCanvas!.getBoundingClientRect();
+    const seg = hitHandlePx(prof, c, rect.width, rect.height);
+    if (seg >= 0) {
+      this._scanHandleDrag = seg;
+      return;
+    }
     const idx = this._scanFindPoint(c, prof);
     if (idx >= 0) {
       this._scanDragIdx = idx;
@@ -1015,21 +1046,52 @@ class DrawingMode {
   }
 
   _scanMouseMove(e: MouseEvent) {
-    if (this._scanDragIdx === null) return;
+    // Curvature-handle drag: bend the segment through the cursor
+    if (this._scanHandleDrag !== null) {
+      dragHandle(this._activeScanProfile(), this._scanHandleDrag, this._scanCoords(e).y, e.altKey);
+      this._applyScanChange();
+      return;
+    }
+
+    if (this._scanDragIdx === null) {
+      // Hover reveal: show the handle only for the segment under the cursor
+      const seg = segmentAtX(this._activeScanProfile(), this._scanCoords(e).x);
+      if (seg !== this._scanHoverSeg) { this._scanHoverSeg = seg; this.drawScanCurve(); }
+      return;
+    }
     const prof = this._activeScanProfile();
     const c = this._scanCoords(e);
     const pt = prof[this._scanDragIdx];
     if (!pt) return;
+    // Alt = fine mode (×0.1 pursuit toward the cursor)
+    let tx = c.x, ty = c.y;
+    if (e.altKey) {
+      tx = pt.x + (c.x - pt.x) * 0.1;
+      ty = pt.y + (c.y - pt.y) * 0.1;
+    }
     // Lock the endpoints' x (they must span the full path 0..1).
-    if (this._scanDragIdx === 0) { pt.x = 0; pt.y = c.y; }
-    else if (this._scanDragIdx === prof.length - 1) { pt.x = 1; pt.y = c.y; }
-    else { pt.x = c.x; pt.y = c.y; }
+    // Middle points are clamped between their neighbors so they can never
+    // cross (crossing broke the x-sorted curve rendering).
+    if (this._scanDragIdx === 0) { pt.x = 0; pt.y = ty; }
+    else if (this._scanDragIdx === prof.length - 1) { pt.x = 1; pt.y = ty; }
+    else {
+      const eps = 0.004;
+      pt.x = Math.max(prof[this._scanDragIdx - 1].x + eps,
+             Math.min(prof[this._scanDragIdx + 1].x - eps, tx));
+      pt.y = ty;
+    }
     this._applyScanChange();
   }
 
   _scanDblClick(e: MouseEvent) {
     const prof = this._activeScanProfile();
     const c = this._scanCoords(e);
+    // Reset a curvature handle to linear before considering point deletion
+    const rect = this._scanCanvas!.getBoundingClientRect();
+    if (resetHandleAtPx(prof, c, rect.width, rect.height)) {
+      this._applyScanChange();
+      return;
+    }
     const idx = this._scanFindPoint(c, prof);
     if (idx > 0 && idx < prof.length - 1) {
       prof.splice(idx, 1);
@@ -1042,7 +1104,7 @@ class DrawingMode {
   updateWaveformPreview() {
     const slot = this.slots[this.activeSlot];
     this.drawWaveCanvas('draw-wave-l', slot.waveX, '#4a9eff');
-    this.drawWaveCanvas('draw-wave-r', slot.waveY, '#e84545');
+    this.drawWaveCanvas('draw-wave-r', slot.waveY, '#ff5964');
   }
 
   // Match a canvas's backing-store resolution to its CSS display size × DPR, and
@@ -1233,7 +1295,7 @@ class DrawingMode {
         points: slot.points.map(p => ({ x: p.x, y: p.y })),
         waveX: [...slot.waveX],
         waveY: [...slot.waveY],
-        scanProfile: (slot.scanProfile ?? this._defaultScanProfile()).map(p => ({ x: p.x, y: p.y })),
+        scanProfile: copyPoints(slot.scanProfile ?? this._defaultScanProfile()),
         scanRippleRate: slot.scanRippleRate || 0,
         scanRippleDepth: slot.scanRippleDepth || 0,
       })),
@@ -1245,7 +1307,7 @@ class DrawingMode {
           points: slot.points.map((pt: any) => ({ x: pt.x, y: pt.y })),
           waveX: [...slot.waveX],
           waveY: [...slot.waveY],
-          scanProfile: (slot.scanProfile ?? this._defaultScanProfile()).map((p: any) => ({ x: p.x, y: p.y })),
+          scanProfile: copyPoints(slot.scanProfile ?? this._defaultScanProfile()),
           scanRippleRate: slot.scanRippleRate || 0,
           scanRippleDepth: slot.scanRippleDepth || 0,
         }))
@@ -1265,7 +1327,7 @@ class DrawingMode {
         this.slots[i].waveX = [...saved.waveX];
         this.slots[i].waveY = [...saved.waveY];
         this.slots[i].scanProfile = Array.isArray(saved.scanProfile) && saved.scanProfile.length >= 2
-          ? saved.scanProfile.map((p: any) => ({ x: p.x, y: p.y }))
+          ? copyPoints(saved.scanProfile)
           : this._defaultScanProfile();
         this.slots[i].scanRippleRate = saved.scanRippleRate || 0;
         this.slots[i].scanRippleDepth = saved.scanRippleDepth || 0;
@@ -1284,7 +1346,7 @@ class DrawingMode {
             waveX: [...slot.waveX],
             waveY: [...slot.waveY],
             scanProfile: Array.isArray(slot.scanProfile) && slot.scanProfile.length >= 2
-              ? slot.scanProfile.map((pt: any) => ({ x: pt.x, y: pt.y }))
+              ? copyPoints(slot.scanProfile)
               : this._defaultScanProfile(),
             scanRippleRate: slot.scanRippleRate || 0,
             scanRippleDepth: slot.scanRippleDepth || 0,

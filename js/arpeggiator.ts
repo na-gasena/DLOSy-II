@@ -5,11 +5,13 @@
  */
 import { audioEngine } from './audio-engine';
 import { drawingMode } from './drawing-mode';
+import {
+  evalCurve, hitHandlePx, dragHandle, resetHandleAtPx, drawHandles,
+  segmentAtX, CPoint,
+} from './curve-editor';
 
-interface AdsrPoint {
-  x: number;
-  y: number;
-}
+// Breakpoint with optional per-segment curvature (see curve-editor.ts)
+type AdsrPoint = CPoint;
 
 interface ProgressionDef {
   id: string;
@@ -35,6 +37,10 @@ class Arpeggiator {
   adsrCanvas: HTMLCanvasElement | null;
   adsrCtx2d: CanvasRenderingContext2D | null;
   adsrDragging: number | null;
+  // Curvature-handle drag: segment index whose bend is being edited
+  _adsrHandleDrag: number | null = null;
+  // Segment whose handle is revealed on hover (null = none)
+  _adsrHoverSeg: number | null = null;
   waveType: string;
   glitchSteps: number;
   tableSize: number;
@@ -452,18 +458,8 @@ class Arpeggiator {
   }
 
   _interpolateCurve(t: number) {
-    const pts = this.adsrCurve;
-    if (pts.length === 0) return 0;
-    if (t <= pts[0].x) return pts[0].y;
-    if (t >= pts[pts.length - 1].x) return pts[pts.length - 1].y;
-    for (let i = 1; i < pts.length; i++) {
-      if (t <= pts[i].x) {
-        const range = pts[i].x - pts[i-1].x;
-        const lt = range > 0 ? (t - pts[i-1].x) / range : 0;
-        return pts[i-1].y + (pts[i].y - pts[i-1].y) * lt;
-      }
-    }
-    return pts[pts.length - 1].y;
+    // Piecewise interpolation with per-segment curvature (curve-editor.ts)
+    return evalCurve(this.adsrCurve, t);
   }
 
   // ===== ARPEGGIATOR =====
@@ -1058,9 +1054,25 @@ class Arpeggiator {
       this.adsrCtx2d = this.adsrCanvas!.getContext('2d');
       this.adsrCanvas!.addEventListener('mousedown', (e) => this._adsrMouseDown(e));
       this.adsrCanvas!.addEventListener('mousemove', (e) => this._adsrMouseMove(e));
-      this.adsrCanvas!.addEventListener('mouseup', () => this.adsrDragging = null);
-      this.adsrCanvas!.addEventListener('mouseleave', () => this.adsrDragging = null);
+      this.adsrCanvas!.addEventListener('mouseup', () => { this.adsrDragging = null; this._adsrHandleDrag = null; });
+      this.adsrCanvas!.addEventListener('mouseleave', () => {
+        this.adsrDragging = null; this._adsrHandleDrag = null;
+        if (this._adsrHoverSeg !== null) { this._adsrHoverSeg = null; this.drawAdsrCurve(); }
+      });
       this.adsrCanvas!.addEventListener('dblclick', (e) => this._adsrDblClick(e));
+      // Right-click = delete point (unified across all curve editors)
+      this.adsrCanvas!.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this._adsrDblClick(e);
+      });
+      // Redraw whenever the canvas is (re)laid out — this also covers the tab /
+      // panel becoming visible after starting hidden (display:none gives the
+      // canvas a 0×0 rect, so the initial draw can't size the bitmap; without
+      // this the 300×80 attribute bitmap got stretched to the flex width).
+      if (window.ResizeObserver) {
+        new ResizeObserver(() => this.drawAdsrCurve())
+          .observe(this.adsrCanvas!);
+      }
       this.drawAdsrCurve();
     }
 
@@ -1091,64 +1103,73 @@ class Arpeggiator {
     if (!this.adsrCanvas || !this.adsrCtx2d) return;
     const ctx = this.adsrCtx2d!;
 
-    // Sync internal resolution to CSS display size (prevent stretch)
+    // Sync internal resolution to CSS display size × devicePixelRatio.
+    // Hidden (display:none) → rect is 0×0: skip entirely; the ResizeObserver
+    // re-invokes this once the canvas is actually laid out.
     const dpr = window.devicePixelRatio || 1;
     const rect = this.adsrCanvas!.getBoundingClientRect();
-    if (rect.width > 0 && rect.height > 0) {
-      const cw = Math.round(rect.width * dpr);
-      const ch = Math.round(rect.height * dpr);
-      if (this.adsrCanvas!.width !== cw || this.adsrCanvas!.height !== ch) {
-        this.adsrCanvas!.width = cw;
-        this.adsrCanvas!.height = ch;
-        ctx.scale(dpr, dpr);
-      }
+    if (rect.width <= 0 || rect.height <= 0) return;
+    const cw = Math.round(rect.width * dpr);
+    const ch = Math.round(rect.height * dpr);
+    if (this.adsrCanvas!.width !== cw || this.adsrCanvas!.height !== ch) {
+      this.adsrCanvas!.width = cw;
+      this.adsrCanvas!.height = ch;
     }
-    const w = rect.width || this.adsrCanvas!.width;
-    const h = rect.height || this.adsrCanvas!.height;
+    // Absolute transform each frame (never rely on stateful ctx.scale): all
+    // drawing below is in CSS-pixel coordinates.
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    const w = rect.width;
+    const h = rect.height;
 
     ctx.clearRect(0, 0, w, h);
 
     // Background
-    ctx.fillStyle = '#0a0a0a';
+    ctx.fillStyle = '#101116';
     ctx.fillRect(0, 0, w, h);
 
     // Grid lines
-    ctx.strokeStyle = '#1a1a1a';
+    ctx.strokeStyle = '#22242c';
     ctx.lineWidth = 0.5;
     for (let i = 0; i <= 4; i++) {
       const y = (i / 4) * h;
       ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(w, y); ctx.stroke();
     }
 
-    // Curve
+    // Curve — sampled per pixel so per-segment curvature renders correctly
     const pts = this.adsrCurve;
     if (pts.length < 2) return;
 
-    ctx.strokeStyle = '#00ff88';
+    const steps = Math.max(Math.round(w), 64);
+    ctx.strokeStyle = '#3ddc84';
     ctx.lineWidth = 2;
     ctx.beginPath();
-    pts.forEach((p, i) => {
-      const px = p.x * w;
-      const py = (1 - p.y) * h;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const px = t * w;
+      const py = (1 - evalCurve(pts, t)) * h;
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
-    });
+    }
     ctx.stroke();
 
     // Fill under curve
     ctx.globalAlpha = 0.1;
-    ctx.fillStyle = '#00ff88';
-    ctx.lineTo(pts[pts.length - 1].x * w, h);
-    ctx.lineTo(pts[0].x * w, h);
+    ctx.fillStyle = '#3ddc84';
+    ctx.lineTo(w, h);
+    ctx.lineTo(0, h);
     ctx.closePath();
     ctx.fill();
     ctx.globalAlpha = 1.0;
+
+    // Curvature handles — revealed on hover / drag; subtle hint on bent ones
+    drawHandles(ctx, pts, (x) => x * w, (y) => (1 - y) * h,
+      { activeSeg: this._adsrHandleDrag ?? this._adsrHoverSeg, size: 3.5 });
 
     // Points
     pts.forEach(p => {
       const px = p.x * w;
       const py = (1 - p.y) * h;
-      ctx.fillStyle = '#00ff88';
+      ctx.fillStyle = '#3ddc84';
       ctx.beginPath();
       ctx.arc(px, py, 4, 0, Math.PI * 2);
       ctx.fill();
@@ -1168,8 +1189,17 @@ class Arpeggiator {
 
   _adsrMouseDown(e: MouseEvent) {
     const pos = this._adsrMousePos(e);
-    const w = this.adsrCanvas!.width;
-    const h = this.adsrCanvas!.height;
+    // Hit-test in CSS pixels (rect), NOT the DPR-scaled bitmap size
+    const rect = this.adsrCanvas!.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    // Curvature handle first (it sits on the curve between points).
+    const seg = hitHandlePx(this.adsrCurve, pos, w, h);
+    if (seg >= 0) {
+      this._adsrHandleDrag = seg;
+      return;
+    }
 
     // Find nearest point
     let nearIdx = -1;
@@ -1199,10 +1229,29 @@ class Arpeggiator {
   }
 
   _adsrMouseMove(e: MouseEvent) {
-    if (this.adsrDragging === null) return;
+    // Curvature-handle drag: bend the segment through the cursor
+    if (this._adsrHandleDrag !== null) {
+      dragHandle(this.adsrCurve, this._adsrHandleDrag, this._adsrMousePos(e).y, e.altKey);
+      this.drawAdsrCurve();
+      return;
+    }
+
+    if (this.adsrDragging === null) {
+      // Hover reveal: show the handle only for the segment under the cursor
+      const seg = segmentAtX(this.adsrCurve, this._adsrMousePos(e).x);
+      if (seg !== this._adsrHoverSeg) { this._adsrHoverSeg = seg; this.drawAdsrCurve(); }
+      return;
+    }
     const pos = this._adsrMousePos(e);
     const pts = this.adsrCurve;
     const idx = this.adsrDragging;
+
+    // Alt = fine mode (×0.1 pursuit toward the cursor)
+    let tx = pos.x, ty = pos.y;
+    if (e.altKey) {
+      tx = pts[idx].x + (pos.x - pts[idx].x) * 0.1;
+      ty = pts[idx].y + (pos.y - pts[idx].y) * 0.1;
+    }
 
     // First and last points: lock X
     if (idx === 0) {
@@ -1211,16 +1260,24 @@ class Arpeggiator {
       pts[idx].x = 1;
     } else {
       // Clamp between neighbors
-      pts[idx].x = Math.max(pts[idx - 1].x + 0.01, Math.min(pts[idx + 1].x - 0.01, pos.x));
+      pts[idx].x = Math.max(pts[idx - 1].x + 0.01, Math.min(pts[idx + 1].x - 0.01, tx));
     }
-    pts[idx].y = pos.y;
+    pts[idx].y = ty;
     this.drawAdsrCurve();
   }
 
   _adsrDblClick(e: MouseEvent) {
     const pos = this._adsrMousePos(e);
-    const w = this.adsrCanvas!.width;
-    const h = this.adsrCanvas!.height;
+    // Hit-test in CSS pixels (rect), NOT the DPR-scaled bitmap size
+    const rect = this.adsrCanvas!.getBoundingClientRect();
+    const w = rect.width;
+    const h = rect.height;
+
+    // Reset a curvature handle to linear before considering point deletion
+    if (resetHandleAtPx(this.adsrCurve, pos, w, h)) {
+      this.drawAdsrCurve();
+      return;
+    }
 
     // Find and remove point (not first/last)
     for (let i = 1; i < this.adsrCurve.length - 1; i++) {

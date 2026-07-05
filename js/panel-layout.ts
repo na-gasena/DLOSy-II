@@ -15,6 +15,8 @@ interface LayoutData {
   sizes: Record<string, string>;
   order: Record<string, string[]>;
   hidden: Record<string, boolean>;
+  collapsed: Record<string, boolean>;
+  settingsFloat: boolean;
 }
 
 // The three secondary top-row blocks that can be shown/hidden. VCO LOOP and
@@ -53,8 +55,52 @@ class PanelLayout {
     ]);
     this.buildRowHandle();
     this.buildToggleBar();
-    this.buildResetButton();
+    this.initPanelCollapse();
+    this.applySettingsFloat();
     this.applyTopVisibility();
+  }
+
+  // ===== PANEL COLLAPSE (double-click title) =====
+  // Double-clicking a panel's title bar collapses its body to just the header
+  // (a quick way to reclaim space without fully hiding the panel). Persisted.
+  initPanelCollapse() {
+    const collapsed = this.layout.collapsed || (this.layout.collapsed = {});
+    document.querySelectorAll<HTMLElement>('.panel').forEach(panel => {
+      if (!panel.id) return;
+      if (collapsed[panel.id]) panel.classList.add('panel-collapsed');
+      // Delegate: dblclick on this panel's own title (not nested UIs)
+      panel.addEventListener('dblclick', (e) => {
+        const title = (e.target as HTMLElement).closest('.panel-title');
+        if (!title || title.closest('.panel') !== panel) return;
+        const now = panel.classList.toggle('panel-collapsed');
+        this.layout.collapsed[panel.id] = now;
+        this.saveLayout();
+        window.dispatchEvent(new Event('resize'));
+      });
+    });
+  }
+
+  // ===== SETTINGS FLOAT (popover) MODE =====
+  // Renders the left SETTINGS panel as a floating overlay instead of a docked
+  // grid column, so VCO LOOP + DRAWING MODE get the full width. Toggled from
+  // the Settings modal; persisted.
+  setSettingsFloat(on: boolean) {
+    this.layout.settingsFloat = on;
+    // Switching to Floating is invisible if the SETTINGS panel is currently
+    // hidden (VIEW chips default to hidden) — the user picks "Floating" and
+    // sees no change at all, which reads as "the setting didn't apply".
+    // Auto-reveal the panel so the effect is immediately visible.
+    if (on) {
+      this.layout.hidden = this.layout.hidden || {};
+      this.layout.hidden['panel-synth'] = false;
+    }
+    this.saveLayout();
+    this.applySettingsFloat();
+    this.applyTopVisibility(); // recompute the top-row grid + re-sync chip highlight
+  }
+
+  applySettingsFloat() {
+    document.body.classList.toggle('settings-float', !!this.layout.settingsFloat);
   }
 
   // ===== PERSISTENCE =====
@@ -78,10 +124,12 @@ class PanelLayout {
           order: parsed.order || {},
           // Respect an explicit saved map; fall back to the hidden-by-default view.
           hidden: parsed.hidden || this.defaultHidden(),
+          collapsed: parsed.collapsed || {},
+          settingsFloat: !!parsed.settingsFloat,
         };
       }
     } catch (e) {}
-    return { sizes: {}, order: {}, hidden: this.defaultHidden() };
+    return { sizes: {}, order: {}, hidden: this.defaultHidden(), collapsed: {}, settingsFloat: false };
   }
 
   saveLayout() {
@@ -288,17 +336,29 @@ class PanelLayout {
     label.textContent = 'VIEW';
     bar.appendChild(label);
 
-    TOGGLEABLE_PANELS.forEach(({ id, label: text }) => {
+    TOGGLEABLE_PANELS.forEach(({ id, label: text }, i) => {
       const chip = document.createElement('button');
       chip.className = 'panel-toggle-chip';
       chip.textContent = text;
-      chip.title = `${text} パネルの表示 / 非表示`;
+      chip.title = `${text} パネルの表示 / 非表示 (F${i + 1})`;
       chip.addEventListener('click', () => this.togglePanel(id));
       this._chips[id] = chip;
       bar.appendChild(chip);
     });
 
     header.appendChild(bar);
+
+    // Keyboard shortcuts: F1/F2/F3 toggle each secondary panel without looking
+    // away from the main workspace (Tweeq principle: gestural/keyboard inputs
+    // that don't demand visual attention).
+    document.addEventListener('keydown', (e) => {
+      if ((e.target as HTMLElement).closest('input, textarea, select')) return;
+      const idx = ['F1', 'F2', 'F3'].indexOf(e.key);
+      if (idx >= 0 && TOGGLEABLE_PANELS[idx]) {
+        e.preventDefault(); // suppress browser help (F1) etc.
+        this.togglePanel(TOGGLEABLE_PANELS[idx].id);
+      }
+    });
   }
 
   togglePanel(id: string) {
@@ -316,24 +376,28 @@ class PanelLayout {
     const main = document.getElementById('synth-main');
     if (!main) return;
     const hidden = this.layout.hidden || {};
+    const floatSettings = !!this.layout.settingsFloat;
 
-    // 1) Panels
+    // 1) Panels. panel-synth in float mode is shown as a fixed overlay (CSS),
+    //    so it stays out of the grid flow — it's treated as grid-absent below.
     TOGGLEABLE_PANELS.forEach(({ id }) => {
       const el = document.getElementById(id);
       if (el) el.style.display = hidden[id] ? 'none' : '';
     });
 
-    // 2) Resize handles: a handle is only meaningful between two visible panels.
+    // A panel counts as "in the grid" only if visible AND not floating.
+    const inGrid = (el?: HTMLElement) =>
+      !!el && el.style.display !== 'none'
+      && !(floatSettings && el.id === 'panel-synth');
+
+    // 2) Resize handles: a handle is only meaningful between two in-grid panels.
     const children = Array.from(main.children) as HTMLElement[];
     children.forEach((child, i) => {
       if (!child.classList.contains('panel-resize-handle')) return;
-      const prev = children[i - 1];
-      const next = children[i + 1];
-      const gone = (el?: HTMLElement) => !el || el.style.display === 'none';
-      child.style.display = (gone(prev) || gone(next)) ? 'none' : '';
+      child.style.display = (inGrid(children[i - 1]) && inGrid(children[i + 1])) ? '' : 'none';
     });
 
-    // 3) Rebuild the grid template from the currently visible children, so hidden
+    // 3) Rebuild the grid template from the in-grid children, so hidden/floating
     //    panels don't leave empty columns.
     const track = (el: HTMLElement) => {
       if (el.classList.contains('panel-resize-handle')) return '10px';
@@ -341,12 +405,14 @@ class PanelLayout {
       if (el.id === 'panel-effects') return 'var(--col-right, 280px)';
       return 'minmax(0, 1fr)'; // panel-center (or any flexible panel)
     };
-    const visible = children.filter(c => c.style.display !== 'none');
-    main.style.gridTemplateColumns = visible.map(track).join(' ');
+    const gridChildren = children.filter(c =>
+      c.classList.contains('panel-resize-handle') ? c.style.display !== 'none' : inGrid(c));
+    main.style.gridTemplateColumns = gridChildren.map(track).join(' ');
 
-    // 4) Collapse the top row entirely when every secondary panel is hidden.
-    const anyVisible = TOGGLEABLE_PANELS.some(({ id }) => !hidden[id]);
-    document.body.classList.toggle('top-collapsed', !anyVisible);
+    // 4) Collapse the top row entirely when nothing occupies the grid.
+    const anyInGrid = TOGGLEABLE_PANELS.some(({ id }) =>
+      inGrid(document.getElementById(id) as HTMLElement));
+    document.body.classList.toggle('top-collapsed', !anyInGrid);
 
     // 5) Sync chip highlight (active = panel visible).
     TOGGLEABLE_PANELS.forEach(({ id }) => {
@@ -357,23 +423,6 @@ class PanelLayout {
     window.dispatchEvent(new Event('resize'));
   }
 
-  // ===== RESET BUTTON =====
-
-  buildResetButton() {
-    const header = document.querySelector('.header-controls');
-    if (!header) return;
-    const btn = document.createElement('button');
-    btn.id = 'btn-reset-layout';
-    btn.className = 'transport-btn';
-    btn.textContent = '⟲';
-    btn.title = 'Reset Panel Layout';
-    btn.addEventListener('click', () => {
-      if (confirm('パネルのサイズ・配置をリセットしますか？')) {
-        this.resetLayout();
-      }
-    });
-    header.appendChild(btn);
-  }
 }
 
 export const panelLayout = new PanelLayout();

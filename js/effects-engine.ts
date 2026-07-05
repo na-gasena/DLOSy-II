@@ -6,6 +6,7 @@
 import { audioEngine } from './audio-engine';
 import { registerSerializable } from './registry';
 import { emit } from './events';
+import { attachRotaryKnob } from './param-control';
 
 interface EffectParamDef {
   id: string;
@@ -666,41 +667,28 @@ class EffectsEngine {
       nameSpan.textContent = def.name;
       nameSpan.title = def.desc;
 
-      // Dry/Wet knob
+      // Dry/Wet knob (rotary drag — ui-study InputAngle pattern)
       const dwKnob = document.createElement('div');
       dwKnob.className = 'fx-dw-knob';
-      dwKnob.style.setProperty('--rotation', `${-135 + state.dryWet * 270}deg`);
-      dwKnob.title = 'Dry/Wet (drag up/down · dblclick=100%)';
+      dwKnob.title = 'Dry/Wet (回転ドラッグ · Alt=×0.1 · ダブルクリック=100%)';
 
       const dwValue = document.createElement('span');
       dwValue.className = 'fx-dw-value';
       dwValue.textContent = `${Math.round(state.dryWet * 100)}%`;
 
-      let _dwY: number | null = null;
-      dwKnob.addEventListener('pointerdown', (e) => {
-        _dwY = e.clientY;
-        dwKnob.setPointerCapture(e.pointerId);
-        e.stopPropagation();
-      });
-      dwKnob.addEventListener('pointermove', (e) => {
-        if (_dwY === null) return;
-        state.dryWet = Math.max(0, Math.min(1, state.dryWet + (_dwY - e.clientY) * 0.01));
-        _dwY = e.clientY;
-        dwKnob.style.setProperty('--rotation', `${-135 + state.dryWet * 270}deg`);
-        dwValue.textContent = `${Math.round(state.dryWet * 100)}%`;
+      const applyDryWet = (v: number) => {
+        state.dryWet = v;
+        dwValue.textContent = `${Math.round(v * 100)}%`;
         const w = this.effectWrappers?.[def.id];
-        if (w) { w.wetGain.gain.value = state.dryWet; w.dryGain.gain.value = 1 - state.dryWet; }
-        this.triggerAutoSave();
-      });
-      dwKnob.addEventListener('pointerup', () => { _dwY = null; });
-      dwKnob.addEventListener('dblclick', (e) => {
-        e.stopPropagation();
-        state.dryWet = 1.0;
-        dwKnob.style.setProperty('--rotation', '135deg');
-        dwValue.textContent = '100%';
-        const w = this.effectWrappers?.[def.id];
-        if (w) { w.wetGain.gain.value = 1; w.dryGain.gain.value = 0; }
-        this.triggerAutoSave();
+        if (w) { w.wetGain.gain.value = v; w.dryGain.gain.value = 1 - v; }
+      };
+      attachRotaryKnob(dwKnob, {
+        get: () => state.dryWet,
+        set: applyDryWet,
+        min: 0, max: 1, step: 0.01,
+        defaultValue: 1.0,
+        format: (v) => `${Math.round(v * 100)}%`,
+        onCommit: () => this.triggerAutoSave(),
       });
 
       header.appendChild(dragHandle);

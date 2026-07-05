@@ -1,13 +1,25 @@
 /**
- * DLOSy20 - Audio Output Settings
- * Provides UI for output device selection, sample rate, latency mode, and limiter.
+ * DLOSy20 - Settings
+ * App settings modal (gear icon): audio output device / sample rate / latency /
+ * limiter, plus layout utilities (panel-layout reset).
  */
 import { audioEngine } from './audio-engine';
+import { panelLayout } from './panel-layout';
+
+// Selectable color themes (CSS variable sets in main.css, keyed by
+// body[data-theme]). '' = the default dark theme defined on :root.
+const THEMES: { id: string; label: string }[] = [
+  { id: '', label: 'Dark（標準）' },
+  { id: 'light', label: 'Light' },
+  { id: 'midnight', label: 'Midnight' },
+  { id: 'crt', label: 'CRT' },
+];
 
 class AudioSettings {
   isOpen: boolean;
   currentSinkId: string;
   savedSettings: any | null;
+  theme: string = 'crt'; // default theme for a fresh install (no saved settings yet)
   _limiter: DynamicsCompressorNode | null = null;
 
   constructor() {
@@ -18,8 +30,29 @@ class AudioSettings {
 
   async init() {
     this.loadSettings();
+    this.applyTheme(this.theme); // restore saved theme before first paint settles
     this.buildToggleButton();
     this.buildModal();
+  }
+
+  // ===== COLOR THEME =====
+
+  applyTheme(id: string) {
+    this.theme = THEMES.some(t => t.id === id) ? id : '';
+    if (this.theme) {
+      document.body.dataset.theme = this.theme;
+    } else {
+      delete document.body.dataset.theme;
+    }
+  }
+
+  // Public: apply + persist + reflect in the Settings <select> (used by the
+  // command palette and any external caller).
+  setTheme(id: string) {
+    this.applyTheme(id);
+    this.saveSettings();
+    const sel = document.getElementById('as-theme') as HTMLSelectElement | null;
+    if (sel) sel.value = this.theme;
   }
 
   // ===== PERSISTENT SETTINGS =====
@@ -30,6 +63,11 @@ class AudioSettings {
       if (raw) {
         this.savedSettings = JSON.parse(raw);
         this.currentSinkId = this.savedSettings.sinkId || '';
+        // Preserve an explicit theme choice (including '' = Dark) by checking
+        // key presence rather than truthiness — otherwise an explicit "Dark"
+        // pick would be indistinguishable from "never chosen" and silently
+        // revert to the CRT default on reload.
+        if ('theme' in this.savedSettings) this.theme = this.savedSettings.theme || '';
       }
     } catch (e) {}
   }
@@ -39,6 +77,7 @@ class AudioSettings {
       sinkId: this.currentSinkId,
       latencyHint: (document.getElementById('as-latency') as HTMLSelectElement | null)?.value || 'interactive',
       sampleRate: (document.getElementById('as-samplerate-select') as HTMLSelectElement | null)?.value || '48000',
+      theme: this.theme,
     };
     localStorage.setItem('dlosy20_audio_settings', JSON.stringify(settings));
   }
@@ -52,7 +91,7 @@ class AudioSettings {
     btn.id = 'btn-audio-settings';
     btn.className = 'transport-btn';
     btn.textContent = '⚙';
-    btn.title = 'Audio Settings';
+    btn.title = 'Settings';
     btn.addEventListener('click', () => this.toggle());
     header.appendChild(btn);
   }
@@ -64,7 +103,9 @@ class AudioSettings {
     modal.innerHTML = `
       <div class="as-backdrop"></div>
       <div class="as-panel">
-        <div class="as-title">AUDIO SETTINGS <button id="as-close" class="small-btn">✕</button></div>
+        <div class="as-title">SETTINGS <button id="as-close" class="small-btn">✕</button></div>
+
+        <div class="as-section-title">AUDIO</div>
 
         <div class="as-row">
           <span class="as-label">Output Device</span>
@@ -110,6 +151,28 @@ class AudioSettings {
           <button id="as-limiter-toggle" class="small-btn">OFF</button>
         </div>
 
+        <div class="as-section-title">DISPLAY</div>
+
+        <div class="as-row">
+          <span class="as-label">Theme</span>
+          <select id="as-theme" class="midi-select as-select">
+            ${THEMES.map(t => `<option value="${t.id}">${t.label}</option>`).join('')}
+          </select>
+        </div>
+
+        <div class="as-row">
+          <span class="as-label">Settings Panel</span>
+          <select id="as-settings-float" class="midi-select as-select">
+            <option value="dock">Docked（ドッキング）</option>
+            <option value="float">Floating（フロート）</option>
+          </select>
+        </div>
+
+        <div class="as-row">
+          <span class="as-label">Panel Layout</span>
+          <button id="as-reset-layout" class="small-btn as-wide-btn" title="パネルのサイズ・配置・表示状態を初期化">RESET</button>
+        </div>
+
         <div class="as-note">
           ※ ASIO利用はOS側でFlexASIO等を設定してください。<br>
           ※ Sample Rate変更にはAudioContext再構築が必要です。
@@ -121,6 +184,32 @@ class AudioSettings {
     // Events
     modal.querySelector('.as-backdrop')?.addEventListener('click', () => this.toggle());
     document.getElementById('as-close')?.addEventListener('click', () => this.toggle());
+
+    // Layout reset (moved here from the old header ⟲ button)
+    document.getElementById('as-reset-layout')?.addEventListener('click', () => {
+      if (confirm('パネルのサイズ・配置をリセットしますか？')) {
+        panelLayout.resetLayout();
+      }
+    });
+
+    // Color theme
+    const themeSel = document.getElementById('as-theme') as HTMLSelectElement | null;
+    if (themeSel) {
+      themeSel.value = this.theme;
+      themeSel.addEventListener('change', () => {
+        this.applyTheme(themeSel.value);
+        this.saveSettings();
+      });
+    }
+
+    // Settings-panel float / dock mode (handled by panel-layout)
+    const floatSel = document.getElementById('as-settings-float') as HTMLSelectElement | null;
+    if (floatSel) {
+      floatSel.value = (panelLayout as any).layout?.settingsFloat ? 'float' : 'dock';
+      floatSel.addEventListener('change', () => {
+        panelLayout.setSettingsFloat(floatSel.value === 'float');
+      });
+    }
 
     document.getElementById('as-output-device')?.addEventListener('change', (e) => {
       this.setOutputDevice((e.target as HTMLSelectElement).value);

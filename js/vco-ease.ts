@@ -17,11 +17,13 @@
 import { transport } from './transport';
 import { registerSerializable } from './registry';
 import { emit } from './events';
+import {
+  evalCurve, hitHandlePx, dragHandle, resetHandleAtPx, drawHandles, copyPoints,
+  segmentAtX, CPoint,
+} from './curve-editor';
 
-interface EasePoint {
-  x: number;
-  y: number;
-}
+// Breakpoint with optional per-segment curvature (see curve-editor.ts)
+type EasePoint = CPoint;
 
 interface EasePresetDef {
   id: string;
@@ -37,6 +39,10 @@ class VCOEase {
   edited: Record<string, EasePoint[]>;
   presets: EasePresetDef[];
   draggingPoint: number | null;
+  // Curvature-handle drag: segment index whose bend is being edited
+  _handleDrag: number | null = null;
+  // Segment whose handle is revealed on hover (null = none)
+  _hoverSeg: number | null = null;
   _initialized: boolean = false;
   canvas: HTMLCanvasElement | null = null;
   ctx2d: CanvasRenderingContext2D | null = null;
@@ -102,22 +108,11 @@ class VCOEase {
     return c + (eased - c) * this.amount;
   }
 
-  // Linear interpolation over a control-point array.
+  // Piecewise interpolation over a control-point array (honors per-segment
+  // curvature — see curve-editor.ts).
   evalPoints(pts: EasePoint[], t: number) {
     if (!pts || pts.length === 0) return t;
-    if (pts.length === 1) return pts[0].y;
-    let left = pts[0];
-    let right = pts[pts.length - 1];
-    for (let i = 0; i < pts.length - 1; i++) {
-      if (t >= pts[i].x && t <= pts[i + 1].x) {
-        left = pts[i];
-        right = pts[i + 1];
-        break;
-      }
-    }
-    const range = right.x - left.x;
-    const lt = range > 0 ? (t - left.x) / range : 0;
-    return left.y + (right.y - left.y) * lt;
+    return evalCurve(pts, t);
   }
 
   // Points to draw/edit for the current mode (edited points, or analytic samples).
@@ -219,7 +214,15 @@ class VCOEase {
       this.canvas!.addEventListener('mousedown', (e) => this.onCanvasDown(e));
       this.canvas!.addEventListener('mousemove', (e) => this.onCanvasMove(e));
       window.addEventListener('mouseup', () => this.onCanvasUp());
+      this.canvas!.addEventListener('mouseleave', () => {
+        if (this._hoverSeg !== null) { this._hoverSeg = null; this.draw(); }
+      });
       this.canvas!.addEventListener('dblclick', (e) => this.onCanvasDblClick(e));
+      // Right-click = delete point (unified across all curve editors)
+      this.canvas!.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        this.onCanvasDblClick(e);
+      });
       if (window.ResizeObserver) {
         this._resizeObserver = new ResizeObserver(() => {
           this.syncCanvasSize();
@@ -324,6 +327,15 @@ class VCOEase {
     const pts = this.materialize(); // any mode becomes editable on first touch
     const wasEdited = this.edited[this.preset] === pts; // always true after materialize
 
+    // 0. Curvature handle (sits on the curve between points).
+    const seg = hitHandlePx(pts, coords,
+      this.canvas!.width - 32, this.canvas!.height - 32);
+    if (seg >= 0) {
+      this._handleDrag = seg;
+      this.afterStructureChange();
+      return;
+    }
+
     // 1. Grab an existing point by radius (pure drag-start).
     let idx = this.findPoint(pts, coords);
     if (idx >= 0) {
@@ -352,21 +364,44 @@ class VCOEase {
   }
 
   onCanvasMove(e: MouseEvent) {
-    if (this.draggingPoint === null) return;
+    // Curvature-handle drag: bend the segment through the cursor
+    if (this._handleDrag !== null) {
+      const hp = this.edited[this.preset];
+      if (hp) {
+        dragHandle(hp, this._handleDrag, this.getCoords(e).y, e.altKey);
+        this.draw();
+      }
+      return;
+    }
+
+    if (this.draggingPoint === null) {
+      // Hover reveal: show the handle only for the segment under the cursor
+      const pts = this.displayPoints();
+      const seg = segmentAtX(pts, this.getCoords(e).x);
+      if (seg !== this._hoverSeg) { this._hoverSeg = seg; this.draw(); }
+      return;
+    }
     const pts = this.edited[this.preset];
     const i = this.draggingPoint;
     if (!pts || i <= 0 || i >= pts.length - 1) return; // never move endpoints
     const coords = this.getCoords(e);
+    // Alt = fine mode (×0.1 pursuit toward the cursor)
+    let tx = coords.x, ty = coords.y;
+    if (e.altKey) {
+      tx = pts[i].x + (coords.x - pts[i].x) * 0.1;
+      ty = pts[i].y + (coords.y - pts[i].y) * 0.1;
+    }
     const minX = pts[i - 1].x + 0.001;
     const maxX = pts[i + 1].x - 0.001;
-    pts[i].x = Math.max(minX, Math.min(maxX, coords.x));
-    pts[i].y = coords.y;
+    pts[i].x = Math.max(minX, Math.min(maxX, tx));
+    pts[i].y = ty;
     this.draw();
   }
 
   onCanvasUp() {
-    if (this.draggingPoint !== null) {
+    if (this.draggingPoint !== null || this._handleDrag !== null) {
       this.draggingPoint = null;
+      this._handleDrag = null;
       emit('state:changed');
     }
   }
@@ -375,6 +410,11 @@ class VCOEase {
     const pts = this.edited[this.preset];
     if (!pts) return;
     const coords = this.getCoords(e);
+    // Reset a curvature handle to linear before considering point deletion
+    if (resetHandleAtPx(pts, coords, this.canvas!.width - 32, this.canvas!.height - 32)) {
+      this.afterStructureChange();
+      return;
+    }
     const idx = this.findPoint(pts, coords);
     if (idx > 0 && idx < pts.length - 1) {
       pts.splice(idx, 1);
@@ -453,7 +493,7 @@ class VCOEase {
     }
 
     // Raw eased shape — bright cyan
-    ctx.strokeStyle = '#00e5ff';
+    ctx.strokeStyle = '#22d9f2';
     ctx.lineWidth = 2.5;
     ctx.shadowColor = 'rgba(0, 229, 255, 0.4)';
     ctx.shadowBlur = 6;
@@ -468,9 +508,13 @@ class VCOEase {
 
     // Editable control points (shown for every mode)
     const pts = this.displayPoints();
+
+    // Curvature handles — revealed on hover / drag; subtle hint on bent ones
+    drawHandles(ctx, pts, X, Y, { activeSeg: this._handleDrag ?? this._hoverSeg });
+
     pts.forEach((pt, i) => {
       const locked = i === 0 || i === pts.length - 1;
-      ctx.fillStyle = locked ? '#6a6a78' : '#f5a623';
+      ctx.fillStyle = locked ? '#6c7280' : '#ffb454';
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -491,7 +535,7 @@ class VCOEase {
       ctx.beginPath(); ctx.moveTo(dotX, pad + ih); ctx.lineTo(dotX, dotY); ctx.stroke();
       ctx.beginPath(); ctx.moveTo(pad, dotY); ctx.lineTo(dotX, dotY); ctx.stroke();
 
-      ctx.fillStyle = '#44d62c';
+      ctx.fillStyle = '#3ddc84';
       ctx.shadowColor = 'rgba(68, 214, 44, 0.8)';
       ctx.shadowBlur = 8;
       ctx.beginPath();
@@ -501,7 +545,7 @@ class VCOEase {
     }
 
     // Axis labels
-    ctx.fillStyle = '#6a6a78';
+    ctx.fillStyle = '#6c7280';
     ctx.font = '9px "Share Tech Mono", monospace';
     ctx.fillText('TIME →', pad + iw - 46, pad + ih + 12);
     ctx.save();
@@ -528,7 +572,7 @@ class VCOEase {
   getState() {
     const edited: Record<string, EasePoint[]> = {};
     Object.entries(this.edited).forEach(([k, pts]) => {
-      edited[k] = pts.map((p) => ({ x: p.x, y: p.y }));
+      edited[k] = copyPoints(pts); // preserves per-segment curvature
     });
     return { preset: this.preset, amount: this.amount, edited };
   }
@@ -538,7 +582,7 @@ class VCOEase {
     if (state.edited && typeof state.edited === 'object') {
       const restored: Record<string, EasePoint[]> = {};
       Object.entries(state.edited).forEach(([k, pts]) => {
-        if (Array.isArray(pts)) restored[k] = pts.map((p) => ({ x: p.x, y: p.y }));
+        if (Array.isArray(pts)) restored[k] = copyPoints(pts);
       });
       // CUSTOM must always exist
       if (!restored.custom) restored.custom = [{ x: 0, y: 0 }, { x: 0.5, y: 0.5 }, { x: 1, y: 1 }];

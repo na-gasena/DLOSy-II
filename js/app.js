@@ -20,6 +20,7 @@ import { audioSettings } from './audio-settings';
 import { arpeggiator } from './arpeggiator';
 import { vcoEase } from './vco-ease';
 import { panelLayout } from './panel-layout';
+import { initCommandPalette, registerCommands } from './command-palette';
 
 document.addEventListener('DOMContentLoaded', () => {
   console.log('DLOSy20 Web Synthesizer - Initializing...');
@@ -179,6 +180,34 @@ document.addEventListener('DOMContentLoaded', () => {
   const initialCenterTab = document.querySelector('.center-tab.active');
   if (initialCenterTab) {
     onCenterTabSwitch(initialCenterTab.dataset.tab);
+  }
+
+  // ===== Command Palette (Ctrl/Cmd+K) =====
+  initCommandPalette();
+  registerCommands([
+    { id: 'transport.toggle', title: '再生 / 停止', hint: 'Space', run: () => document.getElementById('btn-play')?.click() },
+    // Panel visibility
+    { id: 'view.settings', title: 'パネル: SETTINGS 表示切替', hint: 'F1', run: () => panelLayout.togglePanel('panel-synth') },
+    { id: 'view.center',   title: 'パネル: CENTER 表示切替',   hint: 'F2', run: () => panelLayout.togglePanel('panel-center') },
+    { id: 'view.effects',  title: 'パネル: EFFECTS 表示切替',  hint: 'F3', run: () => panelLayout.togglePanel('panel-effects') },
+    // Center tabs
+    { id: 'tab.arp',   title: 'タブ: ARP',   hint: 'Center', run: () => onCenterTabSwitch('arp') },
+    { id: 'tab.ease',  title: 'タブ: EASE',  hint: 'Center', run: () => onCenterTabSwitch('ease') },
+    { id: 'tab.glyph', title: 'タブ: GLYPH', hint: 'Center', run: () => onCenterTabSwitch('glyph') },
+    // Presets
+    { id: 'preset.save', title: 'プリセット: ファイルに保存', run: () => presetManager?.saveToFile() },
+    { id: 'preset.load', title: 'プリセット: ファイルから読込', run: () => presetManager?.loadFromFile() },
+    // Themes
+    { id: 'theme.dark',     title: 'テーマ: Dark',     hint: 'Theme', run: () => audioSettings?.setTheme('') },
+    { id: 'theme.light',    title: 'テーマ: Light',    hint: 'Theme', run: () => audioSettings?.setTheme('light') },
+    { id: 'theme.midnight', title: 'テーマ: Midnight', hint: 'Theme', run: () => audioSettings?.setTheme('midnight') },
+    { id: 'theme.crt',      title: 'テーマ: CRT',      hint: 'Theme', run: () => audioSettings?.setTheme('crt') },
+    // Settings modal
+    { id: 'settings.open', title: '設定を開く (Settings)', run: () => audioSettings?.toggle() },
+  ]);
+  // VCO LOOP pattern switch commands (1-8)
+  for (let i = 0; i < 8; i++) {
+    registerCommands([{ id: `vco.pattern.${i}`, title: `VCO LOOP: パターン ${i + 1}`, hint: 'VCO', run: () => vcoLoop?.switchPattern(i) }]);
   }
 
   // First click / touch to init audio context

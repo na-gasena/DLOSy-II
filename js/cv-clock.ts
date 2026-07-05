@@ -334,25 +334,11 @@ class MidiClockSync {
     const el = document.getElementById('midi-clk-bpm');
     if (el) el.textContent = this.detectedBPM ? String(this.detectedBPM) : '---';
 
-    // Also update the main tempo display / knob if synced
+    // Also update the main tempo display / knob if synced.
+    // setTempo() propagates to the engine + every tempo control (knob, readout,
+    // header BPM) through the param-control refreshers.
     if (this.enabled && this.detectedBPM > 0 && audioEngine) {
-      audioEngine.params.tempo = this.detectedBPM;
-      // Update knob UI
-      const tempoKnob = document.getElementById('knob-tempo');
-      if (tempoKnob) {
-        tempoKnob.dataset.value = String(this.detectedBPM);
-        // Re-render the tempo knob via UIComponents' real API.
-        // (旧コードは存在しない renderKnob を呼んでおり、ガードで握り潰されて
-        //  ノブが更新されないバグだった。型厳密化で検出 → 正しい API に修正)
-        const knob = uiComponents && uiComponents.knobs.tempo;
-        if (knob) {
-          knob.value = this.detectedBPM;
-          uiComponents.updateKnobVisual(knob.el, knob.min, knob.max, this.detectedBPM);
-        }
-      }
-      // Update header BPM display
-      const tempoVal = document.getElementById('tempo-value');
-      if (tempoVal) tempoVal.textContent = String(this.detectedBPM);
+      uiComponents.setTempo(this.detectedBPM);
     }
   }
 

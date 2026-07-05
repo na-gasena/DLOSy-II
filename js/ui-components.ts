@@ -1,125 +1,188 @@
 /**
  * DLOSy20 - UI Components
- * Knob interactions + transport keyboard shortcut.
+ * Header + settings parameter controls, built on the param-control engine
+ * (ui-study interaction patterns: rotary knobs, scrubbable numbers).
  *
- * The on-screen musical keyboard, wave/octave selectors and step-input handling
- * were removed together with the Step Sequencer / synth-voice UI. What remains
- * are the header/settings knobs (TEMPO / SWING / MASTER) and Space = Play/Stop.
+ *  - Knobs (.knob: BPM / TEMPO / SWING / MASTER) use rotary dragging with an
+ *    arc-arrow HUD, Alt=fine, double-click reset, and a scrubbable numeric
+ *    readout underneath (drag to change, click to type).
+ *  - The header BPM value is itself a scrubbable number.
+ *  - Space = Play/Stop.
+ *
+ * State: `audioEngine.params` is the single source of truth — controls read
+ * from it directly (no UI-side value cache, so preset auto-load can never
+ * desync the display). After a preset load, audio-engine emits
+ * 'params:changed' and every registered control re-renders.
  */
 import { audioEngine } from './audio-engine';
-
-interface KnobState {
-  el: HTMLElement;
-  min: number;
-  max: number;
-  value: number;
-}
+import { on } from './events';
+import {
+  attachNumberScrub,
+  attachRotaryKnob,
+  initRangeEnhancer,
+  ParamControl,
+} from './param-control';
+import { registerContextMenu } from './context-menu';
 
 class UIComponents {
-  knobs: Record<string, KnobState>;
-  activeKnob: string | null;
-  knobStartY: number;
-  knobStartValue: number;
-
-  constructor() {
-    this.knobs = {};
-    this.activeKnob = null;
-    this.knobStartY = 0;
-    this.knobStartValue = 0;
-  }
+  // param name → controls to refresh when the value changes externally
+  private refreshers: Record<string, ParamControl[]> = {};
 
   init() {
+    initRangeEnhancer();
     this.initKnobs();
+    this.initBpmDisplay();
     this.initKeyboardInput();
+    this.initSliderContextMenu();
+    // Preset auto-load (or any engine-side restore) → re-render every control.
+    on('params:changed', () => this.refreshAll());
   }
 
-  // ===== KNOBS =====
-  initKnobs() {
-    document.querySelectorAll<HTMLElement>('.knob').forEach(el => {
-      const param = el.dataset.param ?? "";
-      const min = parseFloat(el.dataset.min ?? "");
-      const max = parseFloat(el.dataset.max ?? "");
-      const value = parseFloat(el.dataset.value ?? "");
+  // ===== PARAM PLUMBING =====
 
-      this.knobs[param] = { el, min, max, value };
-      this.updateKnobVisual(el, min, max, value);
-
-      el.addEventListener('mousedown', (e) => this.onKnobMouseDown(e, param));
-      el.addEventListener('touchstart', (e) => this.onKnobTouchStart(e, param), { passive: false });
-    });
-
-    document.addEventListener('mousemove', (e) => this.onKnobMouseMove(e));
-    document.addEventListener('mouseup', () => this.onKnobMouseUp());
-    document.addEventListener('touchmove', (e) => this.onKnobTouchMove(e), { passive: false });
-    document.addEventListener('touchend', () => this.onKnobMouseUp());
+  private getParam(param: string): number {
+    return (audioEngine.params as any)[param] ?? 0;
   }
 
-  onKnobMouseDown(e: MouseEvent, param: string) {
-    this.activeKnob = param;
-    this.knobStartY = e.clientY;
-    this.knobStartValue = this.knobs[param].value;
-    e.preventDefault();
-  }
-
-  onKnobTouchStart(e: TouchEvent, param: string) {
-    this.activeKnob = param;
-    this.knobStartY = e.touches[0].clientY;
-    this.knobStartValue = this.knobs[param].value;
-    e.preventDefault();
-  }
-
-  onKnobMouseMove(e: MouseEvent) {
-    if (!this.activeKnob) return;
-    const knob = this.knobs[this.activeKnob];
-    const deltaY = this.knobStartY - e.clientY;
-    const range = knob.max - knob.min;
-    const sensitivity = range / 150;
-    let newValue = this.knobStartValue + deltaY * sensitivity;
-    newValue = Math.max(knob.min, Math.min(knob.max, newValue));
-
-    knob.value = newValue;
-    this.updateKnobVisual(knob.el, knob.min, knob.max, newValue);
-    this.applyKnob(this.activeKnob, newValue);
-  }
-
-  onKnobTouchMove(e: TouchEvent) {
-    if (!this.activeKnob) return;
-    e.preventDefault();
-    const touch = e.touches[0];
-    const knob = this.knobs[this.activeKnob];
-    const deltaY = this.knobStartY - touch.clientY;
-    const range = knob.max - knob.min;
-    const sensitivity = range / 150;
-    let newValue = this.knobStartValue + deltaY * sensitivity;
-    newValue = Math.max(knob.min, Math.min(knob.max, newValue));
-
-    knob.value = newValue;
-    this.updateKnobVisual(knob.el, knob.min, knob.max, newValue);
-    this.applyKnob(this.activeKnob, newValue);
-  }
-
-  applyKnob(param: string, newValue: number) {
+  private applyParam(param: string, v: number) {
     if (param === 'tempo') {
-      audioEngine.params.tempo = newValue;
+      audioEngine.params.tempo = v;
       const disp = document.getElementById('tempo-value');
-      if (disp) disp.textContent = String(Math.round(newValue));
+      if (disp && !disp.classList.contains('editing')) {
+        disp.textContent = String(Math.round(v));
+      }
     } else {
-      audioEngine.setParam(param, newValue);
+      audioEngine.setParam(param, v);
     }
+    this.refreshers[param]?.forEach(c => c.refresh());
   }
 
-  onKnobMouseUp() {
-    this.activeKnob = null;
+  private register(param: string, c: ParamControl) {
+    (this.refreshers[param] ??= []).push(c);
   }
 
-  updateKnobVisual(el: HTMLElement, min: number, max: number, value: number) {
-    const normalized = (value - min) / (max - min);
-    const angle = -135 + normalized * 270; // -135° to +135°
-    el.style.setProperty('--rotation', `${angle}deg`);
+  refreshAll() {
+    Object.entries(this.refreshers).forEach(([param, list]) => {
+      list.forEach(c => c.refresh());
+      if (param === 'tempo') {
+        const disp = document.getElementById('tempo-value');
+        if (disp && !disp.classList.contains('editing')) {
+          disp.textContent = String(Math.round(this.getParam('tempo')));
+        }
+      }
+    });
+  }
+
+  /** External tempo update (MIDI clock sync etc.) — keeps all UI in sync. */
+  setTempo(bpm: number) {
+    this.applyParam('tempo', bpm);
+  }
+
+  // ===== KNOBS (rotary) =====
+
+  private initKnobs() {
+    document.querySelectorAll<HTMLElement>('.knob').forEach(el => {
+      const param = el.dataset.param ?? '';
+      const min = parseFloat(el.dataset.min ?? '0');
+      const max = parseFloat(el.dataset.max ?? '1');
+      const initial = parseFloat(el.dataset.value ?? '0');
+
+      const isPercent = max <= 1;         // masterVol → show 0-100%
+      const step = isPercent ? 0.01 : 1;
+      const toDisplay = (v: number) => (isPercent ? v * 100 : v);
+      const fromDisplay = (v: number) => (isPercent ? v / 100 : v);
+
+      const knobCtl = attachRotaryKnob(el, {
+        get: () => this.getParam(param),
+        set: (v) => this.applyParam(param, v),
+        min, max, step,
+        defaultValue: initial,
+        format: (v) => String(Math.round(toDisplay(v))) + (isPercent ? '%' : ''),
+      });
+      this.register(param, knobCtl);
+
+      // Scrubbable numeric readout below the knob (ui-study ParamField style).
+      // Opt out with data-no-readout (e.g., the compact header BPM knob whose
+      // value is already shown by the scrubbable BPM display).
+      let readCtl: ParamControl | null = null;
+      if (el.dataset.noReadout === undefined) {
+        const group = el.closest('.knob-group, .master-vol-group');
+        if (group) {
+          const readout = document.createElement('div');
+          readout.className = 'pc-readout';
+          readout.dataset.param = param;
+          el.insertAdjacentElement('afterend', readout); // knob → readout → label
+          readCtl = attachNumberScrub(readout, {
+            get: () => toDisplay(this.getParam(param)),
+            set: (v) => this.applyParam(param, fromDisplay(v)),
+            min: toDisplay(min),
+            max: toDisplay(max),
+            step: 1,
+            unit: isPercent ? '%' : '',
+          });
+          this.register(param, readCtl);
+        }
+      }
+
+      // Right-click menu on the knob (and its readout): reset / type a value.
+      const menuItems = () => [
+        {
+          label: `デフォルトに戻す (${Math.round(toDisplay(initial))}${isPercent ? '%' : ''})`,
+          action: () => this.applyParam(param, initial),
+        },
+        ...(readCtl?.edit ? [{ label: '値を入力…', action: () => readCtl!.edit!() }] : []),
+      ];
+      el.dataset.ctxLabel = param;
+      registerContextMenu(`.knob[data-param="${param}"]`, menuItems);
+      if (readCtl) registerContextMenu(`.pc-readout[data-param="${param}"]`, menuItems);
+    });
+  }
+
+  // Generic "Enter value…" on any range slider (defaults vary, so no reset).
+  private initSliderContextMenu() {
+    registerContextMenu('input[type="range"]', (el) => {
+      const input = el as HTMLInputElement;
+      return [{
+        label: '値を入力…',
+        action: () => {
+          const cur = input.value;
+          const v = window.prompt('値:', cur);
+          if (v === null) return;
+          const n = parseFloat(v);
+          if (isNaN(n)) return;
+          const min = parseFloat(input.min || '0');
+          const max = parseFloat(input.max || '100');
+          input.value = String(Math.max(min, Math.min(max, n)));
+          input.dispatchEvent(new Event('input', { bubbles: true }));
+          input.dispatchEvent(new Event('change', { bubbles: true }));
+        },
+      }];
+    });
+  }
+
+  // ===== HEADER BPM =====
+
+  private initBpmDisplay() {
+    const el = document.getElementById('tempo-value');
+    if (!el) return;
+    const ctl = attachNumberScrub(el, {
+      get: () => this.getParam('tempo'),
+      set: (v) => this.applyParam('tempo', v),
+      min: 40,
+      max: 240,
+      step: 1,
+      perPixel: 0.5,
+    });
+    this.register('tempo', ctl);
+    registerContextMenu('#tempo-value', () => [
+      { label: 'デフォルトに戻す (120)', action: () => this.applyParam('tempo', 120) },
+      { label: '値を入力…', action: () => ctl.edit?.() },
+    ]);
   }
 
   // ===== TRANSPORT KEY =====
-  initKeyboardInput() {
+
+  private initKeyboardInput() {
     document.addEventListener('keydown', (e) => {
       if ((e.target as HTMLElement).closest('input, textarea, select')) return;
       // Space = play/stop

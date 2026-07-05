@@ -8,11 +8,13 @@ import { vcoEase } from './vco-ease';
 import { transport } from './transport';
 import { registerSerializable } from './registry';
 import { emit } from './events';
+import {
+  evalCurve, hitHandlePx, dragHandle, resetHandleAtPx, drawHandles, copyPoints,
+  segmentAtX, CPoint,
+} from './curve-editor';
 
-interface CurvePoint {
-  x: number;
-  y: number;
-}
+// Breakpoint with optional per-segment curvature (see curve-editor.ts)
+type CurvePoint = CPoint;
 
 interface VCOCurve {
   points: CurvePoint[];
@@ -69,6 +71,10 @@ class VCOLoop {
   canvas: HTMLCanvasElement | null = null;
   ctx2d: CanvasRenderingContext2D | null = null;
   draggingPoint: number | null = null;
+  // Curvature-handle drag: segment index whose bend is being edited
+  _handleDrag: number | null = null;
+  // Segment whose handle is revealed on hover (null = none)
+  _hoverSeg: number | null = null;
   _resizeObserver: ResizeObserver | null = null;
   // Which voice this instance is (0-based), set by VCOLoopManager. Voice 0 owns
   // the shared editor UI in the current phase; others are audio-only for now.
@@ -184,10 +190,10 @@ class VCOLoop {
   // ===== PATTERN BANK =====
   switchPattern(index: number) {
     if (index === this.activePattern) return;
-    // Save current curves
+    // Save current curves (copyPoints preserves per-segment curvature)
     const saved: Record<string, CurvePoint[]> = {};
     Object.entries(this.curves).forEach(([key, curve]) => {
-      saved[key] = curve.points.map(p => ({ x: p.x, y: p.y }));
+      saved[key] = copyPoints(curve.points);
     });
     this.patternBank[this.activePattern] = {
       waveType: this.waveType,
@@ -205,7 +211,7 @@ class VCOLoop {
       this.masterVolume = target.masterVolume;
       Object.entries(target.curves).forEach(([key, points]) => {
         if (this.curves[key]) {
-          this.curves[key].points = points.map(p => ({ x: p.x, y: p.y }));
+          this.curves[key].points = copyPoints(points);
         }
       });
     } else {
@@ -714,29 +720,10 @@ class VCOLoop {
   getValueAt(paramName: string, t: number) {
     const curve = this.curves[paramName];
     if (!curve) return 0;
-
     const pts = curve.points;
     if (pts.length === 0) return curve.min;
-    if (pts.length === 1) return this.normalizedToValue(pts[0].y, curve);
-
-    // Find surrounding points
-    let left = pts[0];
-    let right = pts[pts.length - 1];
-
-    for (let i = 0; i < pts.length - 1; i++) {
-      if (t >= pts[i].x && t <= pts[i + 1].x) {
-        left = pts[i];
-        right = pts[i + 1];
-        break;
-      }
-    }
-
-    // Linear interpolation of normalized value
-    const range = right.x - left.x;
-    const localT = range > 0 ? (t - left.x) / range : 0;
-    const normalizedValue = left.y + (right.y - left.y) * localT;
-
-    return this.normalizedToValue(normalizedValue, curve);
+    // Piecewise interpolation with per-segment curvature (curve-editor.ts)
+    return this.normalizedToValue(evalCurve(pts, t), curve);
   }
 
   // ===== SYNC WITH TRANSPORT CLOCK =====
@@ -1106,8 +1093,16 @@ class VCOLoop {
     this.canvas!.addEventListener('mousedown', (e) => this.onCanvasMouseDown(e));
     this.canvas!.addEventListener('mousemove', (e) => this.onCanvasMouseMove(e));
     this.canvas!.addEventListener('mouseup', () => this.onCanvasMouseUp());
-    this.canvas!.addEventListener('mouseleave', () => this.onCanvasMouseUp());
+    this.canvas!.addEventListener('mouseleave', () => {
+      this.onCanvasMouseUp();
+      if (this._hoverSeg !== null) { this._hoverSeg = null; this.drawCurve(); }
+    });
     this.canvas!.addEventListener('dblclick', (e) => this.onCanvasDoubleClick(e));
+    // Right-click = delete point (unified across all curve editors)
+    this.canvas!.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      this._deletePointAt(e);
+    });
 
     // Auto-resize canvas when container changes size
     if (window.ResizeObserver) {
@@ -1291,7 +1286,7 @@ class VCOLoop {
 
     const pts = curve.points;
 
-    ctx.strokeStyle = '#e84545';
+    ctx.strokeStyle = '#ff5964';
     ctx.lineWidth = 2;
     ctx.shadowColor = 'rgba(232, 69, 69, 0.4)';
     ctx.shadowBlur = 6;
@@ -1308,12 +1303,21 @@ class VCOLoop {
     ctx.stroke();
     ctx.shadowBlur = 0;
 
+    // Curvature handles — revealed on hover (or while dragging), plus a subtle
+    // hint on already-bent segments.
+    drawHandles(
+      ctx, pts,
+      (x) => pad + x * (w - pad * 2),
+      (y) => pad + (1 - y) * (h - pad * 2),
+      { activeSeg: this._handleDrag ?? this._hoverSeg },
+    );
+
     // Draw points
-    pts.forEach((pt, i) => {
+    pts.forEach((pt) => {
       const x = pad + pt.x * (w - pad * 2);
       const y = pad + (1 - pt.y) * (h - pad * 2);
 
-      ctx.fillStyle = '#f5a623';
+      ctx.fillStyle = '#ffb454';
       ctx.strokeStyle = '#fff';
       ctx.lineWidth = 2;
       ctx.beginPath();
@@ -1328,22 +1332,7 @@ class VCOLoop {
 
   getNormalizedAt(pts: CurvePoint[], t: number) {
     if (pts.length === 0) return 0.5;
-    if (pts.length === 1) return pts[0].y;
-
-    let left = pts[0];
-    let right = pts[pts.length - 1];
-
-    for (let i = 0; i < pts.length - 1; i++) {
-      if (t >= pts[i].x && t <= pts[i + 1].x) {
-        left = pts[i];
-        right = pts[i + 1];
-        break;
-      }
-    }
-
-    const range = right.x - left.x;
-    const localT = range > 0 ? (t - left.x) / range : 0;
-    return left.y + (right.y - left.y) * localT;
+    return evalCurve(pts, t);
   }
 
   updatePlayhead() {
@@ -1387,12 +1376,19 @@ class VCOLoop {
 
   onCanvasMouseDown(e: MouseEvent) {
     const coords = this.getCanvasCoords(e);
+    const curve = this.curves[this.activeParam];
+    // Curvature handle first (it sits on the curve between points)
+    const seg = hitHandlePx(curve.points, coords,
+      this.canvas!.width - 16, this.canvas!.height - 16);
+    if (seg >= 0) {
+      this._handleDrag = seg;
+      return;
+    }
     const idx = this.findPointAt(coords);
     if (idx >= 0) {
       this.draggingPoint = idx;
     } else {
       // Add new point
-      const curve = this.curves[this.activeParam];
       curve.points.push({ x: coords.x, y: coords.y });
       curve.points.sort((a, b) => a.x - b.x);
       this.draggingPoint = curve.points.findIndex(p => p.x === coords.x && p.y === coords.y);
@@ -1411,36 +1407,77 @@ class VCOLoop {
       infoEl.textContent = `${curve.label}: ${val.toFixed(1)} | t: ${(coords.x * 100).toFixed(0)}%`;
     }
 
-    if (this.draggingPoint === null) return;
+    // Curvature-handle drag: bend the segment through the cursor
+    if (this._handleDrag !== null) {
+      dragHandle(this.curves[this.activeParam].points, this._handleDrag, coords.y, e.altKey);
+      this.drawCurve();
+      return;
+    }
+
+    if (this.draggingPoint === null) {
+      // Hover reveal: show the handle only for the segment under the cursor
+      const seg = segmentAtX(this.curves[this.activeParam].points, coords.x);
+      if (seg !== this._hoverSeg) { this._hoverSeg = seg; this.drawCurve(); }
+      return;
+    }
     const curve = this.curves[this.activeParam];
     const pt = curve.points[this.draggingPoint];
     if (!pt) return;
 
-    // First and last points: lock X position
-    if (this.draggingPoint === 0) {
-      pt.y = coords.y;
-    } else if (this.draggingPoint === curve.points.length - 1) {
-      pt.y = coords.y;
+    // Alt = fine mode: the point follows the cursor at 1/10 speed from where
+    // it currently is (ui-study keySlower pattern).
+    let tx = coords.x, ty = coords.y;
+    if (e.altKey) {
+      tx = pt.x + (coords.x - pt.x) * 0.1;
+      ty = pt.y + (coords.y - pt.y) * 0.1;
+    }
+
+    // First and last points: lock X position.
+    // Middle points: clamp X between the neighbors so a point can never cross
+    // them (crossing broke the x-sorted assumption and the curve stopped
+    // rendering). Moving back re-enters the normal range automatically.
+    if (this.draggingPoint === 0 || this.draggingPoint === curve.points.length - 1) {
+      pt.y = ty;
     } else {
-      pt.x = coords.x;
-      pt.y = coords.y;
+      const eps = 0.004;
+      const minX = curve.points[this.draggingPoint - 1].x + eps;
+      const maxX = curve.points[this.draggingPoint + 1].x - eps;
+      pt.x = Math.max(minX, Math.min(maxX, tx));
+      pt.y = ty;
     }
 
     this.drawCurve();
   }
 
   onCanvasMouseUp() {
-    this.draggingPoint = null;
+    if (this.draggingPoint !== null || this._handleDrag !== null) {
+      this.draggingPoint = null;
+      this._handleDrag = null;
+      emit('state:changed'); // persist curve edits (points + curvature)
+    }
+  }
+
+  // Right-click / double-click: reset a curvature handle to linear, or
+  // delete a middle point.
+  _deletePointAt(e: MouseEvent) {
+    const coords = this.getCanvasCoords(e);
+    const pts = this.curves[this.activeParam].points;
+    if (resetHandleAtPx(pts, coords, this.canvas!.width - 16, this.canvas!.height - 16)) {
+      this.drawCurve();
+      emit('state:changed');
+      return;
+    }
+    const idx = this.findPointAt(coords);
+    if (idx > 0 && idx < pts.length - 1) {
+      pts.splice(idx, 1);
+      this.draggingPoint = null;
+      this.drawCurve();
+      emit('state:changed');
+    }
   }
 
   onCanvasDoubleClick(e: MouseEvent) {
-    const coords = this.getCanvasCoords(e);
-    const idx = this.findPointAt(coords);
-    if (idx > 0 && idx < this.curves[this.activeParam].points.length - 1) {
-      // Remove point (but not first/last)
-      this.curves[this.activeParam].points.splice(idx, 1);
-      this.drawCurve();
-    }
+    this._deletePointAt(e);
   }
 
   // ===== MIDI CONTROL (8 slider points) =====
@@ -1505,7 +1542,7 @@ class VCOLoop {
   getState() {
     const curves: Record<string, { points: CurvePoint[] }> = {};
     Object.entries(this.curves).forEach(([key, curve]) => {
-      curves[key] = { points: curve.points.map(p => ({ x: p.x, y: p.y })) };
+      curves[key] = { points: copyPoints(curve.points) };
     });
     return {
       waveType: this.waveType,
@@ -1532,7 +1569,7 @@ class VCOLoop {
     if (state.rate !== undefined) this.rate = state.rate;
     Object.entries(state.curves).forEach(([key, saved]: [string, any]) => {
       if (this.curves[key]) {
-        this.curves[key].points = saved.points.map((p: any) => ({ x: p.x, y: p.y }));
+        this.curves[key].points = copyPoints(saved.points);
       }
     });
     if (state.patternBank) {

@@ -4,6 +4,7 @@
  */
 import { effectsEngine } from './effects-engine';
 import { registerSerializable } from './registry';
+import { emit } from './events';
 
 // 'drawing' は Drawing Mode の波形を指すセンチネル。標準 OscillatorType に加えて
 // アプリ全体で波形種別として保存・比較されるため、型に含める。
@@ -354,8 +355,14 @@ class AudioEngine {
       // Set param state directly so UI and audio stay in sync.
       (this.params as any)[key] = value;
     });
+    // Re-apply node-backed params (gain/filter/delay) from the restored values.
+    ['masterVol', 'cutoff', 'resonance', 'delayTime', 'delayFeedback'].forEach(k => {
+      this.setParam(k, (this.params as any)[k]);
+    });
     // Fire updates so UI components reflect the new values.
     this.syncParamUIDom();
+    // Notify param-control based UI (knobs / readouts / BPM) to re-render.
+    emit('params:changed');
   }
 
   // Sync `.param-slider` DOM values from `this.params`.

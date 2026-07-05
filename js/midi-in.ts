@@ -470,6 +470,10 @@ class MidiIn {
           <div id="midi-in-indicator2" class="midi-indicator"></div>
         </div>
 
+        <!-- ===== ADVANCED (low-frequency config, collapsed by default) ===== -->
+        <button id="midi-adv-toggle" class="pc-collapse-toggle" title="CCマッピング / バンク / 入出力 設定の表示切替">▸ MAPPING / BANKS</button>
+        <div id="midi-adv" class="pc-collapse">
+
         <!-- ===== CC MAPPING ===== -->
         <div class="midi-map-section">
           <div class="midi-in-row midi-learn-row">
@@ -502,8 +506,19 @@ class MidiIn {
             <button id="midi-cfg-import" class="small-btn" title="Import MIDI config from file">IMPORT</button>
           </div>
         </div>
+
+        </div><!-- /#midi-adv -->
       </div>
     `;
+
+    // Advanced-section disclosure (Tweeq principle: minimize the footprint of
+    // low-frequency configuration; the mapping tables only show on demand)
+    document.getElementById('midi-adv-toggle')?.addEventListener('click', () => {
+      const wrap = document.getElementById('midi-adv');
+      const btn = document.getElementById('midi-adv-toggle');
+      const open = wrap?.classList.toggle('open') ?? false;
+      if (btn) btn.textContent = (open ? '▾' : '▸') + ' MAPPING / BANKS';
+    });
 
     // Populate CC Learn target select
     const learnSelect = document.getElementById('midi-in-learn-target');
