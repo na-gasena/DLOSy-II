@@ -1523,20 +1523,9 @@ body.top-collapsed .panel-resize-handle.row-handle {
 }
 .vco-voice-tab.active.on::after { background: #000; box-shadow: none; }
 .vco-voice-container { width: 100%; }
-.vco-voice-sync {
-  margin-left: auto;
-  padding: 3px 10px;
-  font-family: var(--font-mono);
-  font-size: 9px;
-  font-weight: bold;
-  background: var(--btn-surface);
-  border: 1px solid var(--border-panel);
-  color: var(--text-secondary);
-  cursor: pointer;
-  border-radius: 4px;
-  align-self: center;
-}
-.vco-voice-sync:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+
+/* Push the COPY/PASTE pair to the right edge of the voice tab bar. */
+.vco-voice-tab + .vco-voice-copy { margin-left: auto; }
 
 .vco-voice-copy {
   padding: 3px 10px;

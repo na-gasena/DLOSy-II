@@ -95,7 +95,7 @@ class VCOLoop {
     // State
     this.enabled = true;
     this.waveType = 'sine';
-    this.masterVolume = 0.3;
+    this.masterVolume = 1.0; // default VOL = MAX
     this.fadeDuration = 0.2; // seconds
 
     // Curve data: each parameter has an array of control points
@@ -739,7 +739,7 @@ class VCOLoop {
     return this.normalizedToValue(normalizedValue, curve);
   }
 
-  // ===== SYNC WITH STEP SEQUENCER =====
+  // ===== SYNC WITH TRANSPORT CLOCK =====
 
   onStepTick(stepIndex: number, totalSteps: number, whenMs?: number) {
     if (!this.enabled) return;
@@ -953,7 +953,7 @@ class VCOLoop {
           </div>
           <div class="vco-vol-group">
             <span class="label">VOL</span>
-            <input id="vco-vol-slider" type="range" min="0" max="100" value="30" class="vco-vol-slider" data-midi-target="vcoMasterVol" />
+            <input id="vco-vol-slider" type="range" min="0" max="100" value="${Math.round(this.masterVolume * 100)}" class="vco-vol-slider" data-midi-target="vcoMasterVol" />
           </div>
         </div>
       </div>
@@ -1632,14 +1632,6 @@ export class VCOLoopManager {
       tab.addEventListener('click', () => this.setActiveVoice(i));
       tabs.appendChild(tab);
     });
-    // SYNC: realign every voice (phase 0, rate ×1) so they're back in lockstep.
-    // Foundation for richer sync features later.
-    const syncBtn = document.createElement('button');
-    syncBtn.className = 'vco-voice-sync';
-    syncBtn.textContent = 'SYNC';
-    syncBtn.title = '全 voice の位相/レートをリセットして同期';
-    syncBtn.addEventListener('click', () => this.syncAllPhases());
-    tabs.appendChild(syncBtn);
 
     // COPY / PASTE: copy the active voice's settings, paste into another tab to
     // duplicate it. PASTE is disabled until something has been copied.
@@ -1752,18 +1744,6 @@ export class VCOLoopManager {
     emit('state:changed');
   }
 
-  // Reset every voice's phase offset + rate so they realign to the bar.
-  syncAllPhases() {
-    this.voices.forEach(v => {
-      v.phaseOffset = 0;
-      v.rate = 1;
-      const ps = v._el('vco-phase-slider') as HTMLInputElement | null;
-      if (ps) ps.value = '0';
-      const pv = v._el('vco-phase-val');
-      if (pv) pv.textContent = '0%';
-      v._all('.vco-rate-btn').forEach(b => b.classList.toggle('active', parseFloat(b.dataset.rate ?? '1') === 1));
-    });
-  }
   onPlayStart() { this.voices.forEach(v => v.onPlayStart()); this._syncTransport(); }
   onPlayStop() { this.voices.forEach(v => v.onPlayStop()); this._syncTransport(); }
   onStepTick(stepIndex: number, totalSteps: number, whenMs?: number) {
