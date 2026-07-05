@@ -17,6 +17,7 @@ interface LayoutData {
   hidden: Record<string, boolean>;
   collapsed: Record<string, boolean>;
   settingsFloat: boolean;
+  settingsFloatPos: { left: number; top: number } | null;
 }
 
 // The three secondary top-row blocks that can be shown/hidden. VCO LOOP and
@@ -58,6 +59,14 @@ class PanelLayout {
     this.initPanelCollapse();
     this.applySettingsFloat();
     this.applyTopVisibility();
+
+    // Keep the floating SETTINGS overlay inside the viewport on window resize.
+    window.addEventListener('resize', () => {
+      if (this.layout.settingsFloat) {
+        const p = document.getElementById('panel-synth');
+        if (p) this.applyFloatPos(p);
+      }
+    });
   }
 
   // ===== PANEL COLLAPSE (double-click title) =====
@@ -100,7 +109,71 @@ class PanelLayout {
   }
 
   applySettingsFloat() {
-    document.body.classList.toggle('settings-float', !!this.layout.settingsFloat);
+    const float = !!this.layout.settingsFloat;
+    document.body.classList.toggle('settings-float', float);
+    const panel = document.getElementById('panel-synth');
+    if (!panel) return;
+    if (float) {
+      this.ensureFloatHeader(panel);
+      this.applyFloatPos(panel);
+    } else {
+      // Drop the fixed-position offsets so the docked grid layout is clean.
+      panel.style.left = '';
+      panel.style.top = '';
+    }
+  }
+
+  // Clamp + apply the saved floating position (viewport-relative).
+  applyFloatPos(panel: HTMLElement) {
+    const pos = this.layout.settingsFloatPos;
+    if (!pos) return;
+    const w = panel.offsetWidth || 280;
+    const left = Math.max(0, Math.min(window.innerWidth - w, pos.left));
+    const top = Math.max(0, Math.min(window.innerHeight - 40, pos.top));
+    panel.style.left = left + 'px';
+    panel.style.top = top + 'px';
+  }
+
+  // Add a draggable header to the floating SETTINGS panel (once). It is only
+  // visible in float mode (CSS) and lets the user reposition the overlay.
+  ensureFloatHeader(panel: HTMLElement) {
+    if (panel.querySelector(':scope > .panel-float-header')) return;
+
+    const header = document.createElement('div');
+    header.className = 'panel-float-header';
+    header.innerHTML = `<span class="pfh-grip">⠿</span><span class="pfh-title">SETTINGS</span>`;
+    panel.insertBefore(header, panel.firstChild);
+
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    const onMove = (e: PointerEvent) => {
+      const w = panel.offsetWidth;
+      const left = Math.max(0, Math.min(window.innerWidth - w, startLeft + (e.clientX - startX)));
+      const top = Math.max(0, Math.min(window.innerHeight - 40, startTop + (e.clientY - startY)));
+      panel.style.left = left + 'px';
+      panel.style.top = top + 'px';
+    };
+    const onUp = (e: PointerEvent) => {
+      header.releasePointerCapture(e.pointerId);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      header.classList.remove('dragging');
+      this.layout.settingsFloatPos = {
+        left: parseInt(panel.style.left, 10) || 0,
+        top: parseInt(panel.style.top, 10) || 0,
+      };
+      this.saveLayout();
+    };
+    header.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      const r = panel.getBoundingClientRect();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = r.left; startTop = r.top;
+      header.setPointerCapture(e.pointerId);
+      header.classList.add('dragging');
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
   }
 
   // ===== PERSISTENCE =====
@@ -126,10 +199,11 @@ class PanelLayout {
           hidden: parsed.hidden || this.defaultHidden(),
           collapsed: parsed.collapsed || {},
           settingsFloat: !!parsed.settingsFloat,
+          settingsFloatPos: parsed.settingsFloatPos || null,
         };
       }
     } catch (e) {}
-    return { sizes: {}, order: {}, hidden: this.defaultHidden(), collapsed: {}, settingsFloat: false };
+    return { sizes: {}, order: {}, hidden: this.defaultHidden(), collapsed: {}, settingsFloat: false, settingsFloatPos: null };
   }
 
   saveLayout() {

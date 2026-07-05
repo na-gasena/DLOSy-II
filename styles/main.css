@@ -1232,8 +1232,24 @@ body.resizing-row {
 }
 
 /* When every secondary panel is hidden, drop the top row and let the
-   VCO LOOP + DRAWING MODE row grow to fill the viewport. */
+   VCO LOOP + DRAWING MODE row grow to fill the viewport.
+   NB: collapse to zero size rather than display:none — a floating SETTINGS
+   overlay is a fixed-position DESCENDANT of #synth-main, and display:none on
+   an ancestor would hide it too. Zero-height + overflow keeps it rendered
+   (a plain grid establishes no containing block for fixed elements, so the
+   overlay is positioned against the viewport and isn't clipped). */
 body.top-collapsed #synth-main {
+  flex: 0 0 0;
+  height: 0;
+  min-height: 0;
+  padding: 0;
+  overflow: visible;
+}
+
+/* Its in-grid children stay hidden (they're display:none via the hidden map);
+   this belt-and-braces keeps any stray content from showing in the 0-height row. */
+body.top-collapsed #synth-main > .panel:not(#panel-synth),
+body.top-collapsed #synth-main > .panel-resize-handle {
   display: none;
 }
 
@@ -2820,4 +2836,49 @@ body.settings-float #panel-synth {
   overflow-y: auto;
   z-index: 900;
   box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  padding-top: 6px;
+}
+
+/* Draggable header — only shown when floating. Sticky so it stays reachable
+   while the panel body scrolls. */
+.panel-float-header {
+  display: none;
+}
+
+body.settings-float #panel-synth > .panel-float-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: -6px;
+  margin: -6px -16px 8px;
+  padding: 6px 12px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-groove);
+  border-radius: var(--panel-radius) var(--panel-radius) 0 0;
+  cursor: grab;
+  user-select: none;
+  z-index: 1;
+}
+
+.panel-float-header.dragging {
+  cursor: grabbing;
+}
+
+.panel-float-header .pfh-grip {
+  color: var(--text-label);
+  font-size: 12px;
+  letter-spacing: -2px;
+}
+
+.panel-float-header .pfh-title {
+  font-family: var(--font-display);
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--text-secondary);
+}
+
+/* In float mode the reorder grip is meaningless (panel is out of the grid). */
+body.settings-float #panel-synth > .panel-drag-grip {
+  display: none;
 }
