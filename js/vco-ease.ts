@@ -230,6 +230,13 @@ class VCOEase {
         });
         this._resizeObserver.observe(this.canvas!.parentElement!);
       }
+      // Also re-measure on window resize: when this tab is popped into a float
+      // window the panel layout fires resize() after the move settles, so the
+      // graph re-fits even if the ResizeObserver's delivery is missed.
+      window.addEventListener('resize', () => {
+        this.syncCanvasSize();
+        this.draw();
+      });
     }
 
     this.updateButtons();

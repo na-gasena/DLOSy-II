@@ -5,6 +5,8 @@
  * Layout (sizes + order) is persisted to localStorage.
  */
 
+import { showMenu, registerContextMenu, MenuItem } from './context-menu';
+
 interface ResizeHandleConfig {
   varName: string;
   sign: number;
@@ -18,15 +20,46 @@ interface LayoutData {
   collapsed: Record<string, boolean>;
   settingsFloat: boolean;
   settingsFloatPos: { left: number; top: number } | null;
+  // Per floatable CENTER tab (phase / glyph): 'dock' (default, in the tab strip),
+  // 'float' (own overlay window) or 'hidden' (not shown anywhere). Plus where
+  // each floating window last sat (viewport-relative).
+  tabMode: Record<string, string>;
+  tabFloatPos: Record<string, { left: number; top: number }>;
+  v: number; // layout schema version, for one-time default migrations
 }
 
-// The three secondary top-row blocks that can be shown/hidden. VCO LOOP and
-// DRAWING MODE (the bottom row) are the main panels and are always visible.
-const TOGGLEABLE_PANELS: { id: string; label: string }[] = [
-  { id: 'panel-synth', label: 'SETTINGS' },
-  { id: 'panel-center', label: 'CENTER' },
-  { id: 'panel-effects', label: 'EFFECTS' },
+// Bump when new defaults should be force-applied ONCE to existing saved layouts.
+// v1: unified float VIEW bar — SETTINGS floats, EFFECTS rests hidden.
+const LAYOUT_VERSION = 1;
+
+// (The old red show/hide chips are gone — everything is a float chip now.) This
+// array stays only so the legacy display/grid helpers can iterate it; it is
+// intentionally empty. SETTINGS + EFFECTS are float chips (see below); CENTER's
+// tabs are individually floatable so no whole-CENTER toggle is needed.
+const TOGGLEABLE_PANELS: { id: string; label: string }[] = [];
+
+// CENTER tabs that can be popped out of the panel-center tab strip into their
+// own floating window. `id` matches the tab's data-tab / `center-tab-<id>`
+// content element. Chip/✕ toggle float ↔ hidden; dock is explicit (right-click).
+const FLOATABLE_TABS: { id: string; label: string }[] = [
+  { id: 'arp',   label: 'ARP'   },
+  { id: 'ease',  label: 'EASE'  },
+  { id: 'phase', label: 'PHASE' },
+  { id: 'glyph', label: 'GLYPH' },
 ];
+
+// Whole panels (grid items) that can be popped out into a floating window. `id`
+// is the panel element; `group` is the layout group whose grid must be recomputed
+// when it floats/docks; `off` is the resting (non-float) state the chip toggles to.
+// EFFECTS rests HIDDEN (off by default); VCO/DRAWING rest DOCKED (always there).
+const FLOATABLE_PANELS: { id: string; label: string; group: string; off: string }[] = [
+  { id: 'panel-effects',  label: 'EFFECTS',  group: 'synth-main',  off: 'hidden' },
+  { id: 'vco-loop-panel', label: 'VCO LOOP', group: 'panel-bottom', off: 'dock' },
+  { id: 'drawing-panel',  label: 'DRAWING',  group: 'panel-bottom', off: 'dock' },
+];
+
+const isFloatablePanel = (id: string) => FLOATABLE_PANELS.some(p => p.id === id);
+const panelOff = (id: string) => FLOATABLE_PANELS.find(p => p.id === id)?.off || 'dock';
 
 interface PanelGroup {
   containerId: string;
@@ -39,6 +72,7 @@ class PanelLayout {
   storageKey: string;
   layout: LayoutData;
   _chips: Record<string, HTMLButtonElement> = {};
+  _groups: Record<string, PanelGroup> = {}; // by containerId, for panel float re-render
 
   constructor() {
     this.storageKey = 'dlosy20_panel_layout';
@@ -58,14 +92,19 @@ class PanelLayout {
     this.buildToggleBar();
     this.initPanelCollapse();
     this.applySettingsFloat();
+    this.initTabFloats();
     this.applyTopVisibility();
 
-    // Keep the floating SETTINGS overlay inside the viewport on window resize.
+    // Keep floating overlays (SETTINGS + any popped-out CENTER tab) inside the
+    // viewport on window resize.
     window.addEventListener('resize', () => {
       if (this.layout.settingsFloat) {
         const p = document.getElementById('panel-synth');
         if (p) this.applyFloatPos(p);
       }
+      [...FLOATABLE_TABS, ...FLOATABLE_PANELS].forEach(({ id }) => {
+        if (this.getTabMode(id) === 'float') this.positionTabFloat(id);
+      });
     });
   }
 
@@ -79,8 +118,14 @@ class PanelLayout {
       if (collapsed[panel.id]) panel.classList.add('panel-collapsed');
       // Delegate: dblclick on this panel's own title (not nested UIs)
       panel.addEventListener('dblclick', (e) => {
-        const title = (e.target as HTMLElement).closest('.panel-title');
+        const t = e.target as HTMLElement;
+        const title = t.closest('.panel-title');
         if (!title || title.closest('.panel') !== panel) return;
+        // The title bar hosts interactive controls (voice tabs, wave/VOL,
+        // COPY/PASTE, tool buttons…). Double-clicking THOSE must NOT collapse
+        // the panel — that was firing accidentally and hiding the VCO editor.
+        // Only a double-click on the bare title area toggles collapse.
+        if (t.closest('button, input, select, textarea, canvas, a, [draggable="true"], .knob, .pc-readout, .pattern-btn')) return;
         const now = panel.classList.toggle('panel-collapsed');
         this.layout.collapsed[panel.id] = now;
         this.saveLayout();
@@ -111,6 +156,7 @@ class PanelLayout {
   applySettingsFloat() {
     const float = !!this.layout.settingsFloat;
     document.body.classList.toggle('settings-float', float);
+    this._chips['tab-panel-synth']?.classList.toggle('active', float); // VIEW chip
     const panel = document.getElementById('panel-synth');
     if (!panel) return;
     if (float) {
@@ -176,6 +222,275 @@ class PanelLayout {
     });
   }
 
+  // ===== CENTER TAB FLOAT (pop-out) MODE =====
+  // PHASE / GLYPH can be lifted out of the panel-center tab strip into their own
+  // floating window (like the SETTINGS overlay), so they stay visible while the
+  // user works elsewhere — independent of whether the CENTER panel is shown.
+
+  // Restore non-default float modes (tabs + panels) + wire tab right-click menu.
+  initTabFloats() {
+    FLOATABLE_TABS.forEach(({ id }) => {
+      if (this.getTabMode(id) !== 'dock') this.applyTabMode(id);
+    });
+    FLOATABLE_PANELS.forEach(({ id }) => {
+      if (this.getTabMode(id) !== 'dock') this.applyPanelMode(id);
+    });
+    // Sync every chip's lit state (dock-default panels like VCO/DRAWING never hit
+    // applyPanelMode above, so light them here).
+    [...FLOATABLE_TABS, ...FLOATABLE_PANELS].forEach(({ id }) => this.updateTabChip(id));
+    this._syncCenterVisibility();
+    // Right-clicking a floatable tab button offers the Float / Dock / Hide menu.
+    // (Whole panels are controlled from their VIEW chip — left-click toggles
+    // float↔off, right-click opens the same menu — and the float window's ✕;
+    // a panel-body right-click would shadow the controls' own context menus.)
+    registerContextMenu('.center-tab', (el) => {
+      const tab = (el as HTMLElement).dataset.tab || '';
+      if (!FLOATABLE_TABS.some(t => t.id === tab)) return null;
+      return this.tabModeMenu(tab);
+    });
+  }
+
+  // Hide the CENTER panel entirely when none of its tabs are docked (all floated
+  // or hidden) — otherwise an empty tab strip lingers as a blank dock. Shown
+  // again the moment any tab is docked back.
+  _syncCenterVisibility() {
+    const center = document.getElementById('panel-center');
+    if (!center) return;
+    const anyDocked = FLOATABLE_TABS.some(t => this.getTabMode(t.id) === 'dock');
+    center.style.display = anyDocked ? '' : 'none';
+    this.applyTopVisibility(); // recompute the top grid (+ collapse if now empty)
+  }
+
+  getTabMode(id: string): string {
+    return this.layout.tabMode[id] || 'dock';
+  }
+
+  // Menu shared by the VIEW chip and the right-click menu: Float / Dock / 非表示
+  // for every floatable unit (tabs and panels alike).
+  tabModeMenu(id: string): MenuItem[] {
+    const mode = this.getTabMode(id);
+    const item = (m: string, label: string): MenuItem => ({
+      label: (mode === m ? '● ' : '○ ') + label,
+      disabled: mode === m,
+      action: () => this.setTabMode(id, m),
+    });
+    return [item('float', 'フロート'), item('dock', 'ドック'), item('hidden', '非表示')];
+  }
+
+  setTabMode(id: string, mode: string) {
+    const known = FLOATABLE_TABS.some(t => t.id === id) || isFloatablePanel(id);
+    if (!known) return;
+    this.layout.tabMode[id] = mode;
+    this.saveLayout();
+    if (isFloatablePanel(id)) {
+      this.applyPanelMode(id);
+    } else {
+      this.applyTabMode(id);
+      this._syncCenterVisibility(); // an all-tabs-off state collapses CENTER
+    }
+  }
+
+  // Reflect a tab's mode onto the DOM: 'float' (overlay window), 'dock' (back in
+  // the tab strip, revealed + active) or 'hidden' (not shown anywhere).
+  applyTabMode(id: string) {
+    const mode = this.getTabMode(id);
+    const content = document.getElementById(`center-tab-${id}`);
+    const tabBtn = document.querySelector<HTMLElement>(`.center-tab[data-tab="${id}"]`);
+    if (!content) return;
+
+    if (mode === 'float') {
+      const win = this.ensureTabFloatWindow(id);
+      if (content.parentElement !== win) win.appendChild(content);
+      this.positionTabFloat(id);
+      // Hide the docked tab button while floating; if it was the active tab, fall
+      // back to the first still-visible tab so panel-center isn't left blank.
+      if (tabBtn) {
+        const wasActive = tabBtn.classList.contains('active');
+        tabBtn.style.display = 'none';
+        if (wasActive) {
+          const fallback = Array.from(document.querySelectorAll<HTMLElement>('.center-tab'))
+            .find(b => b.style.display !== 'none');
+          fallback?.click();
+        }
+      }
+    } else {
+      // dock / hidden: return the content to the tab strip, drop the float window.
+      const center = document.getElementById('panel-center');
+      if (center && content.parentElement !== center) center.appendChild(content);
+      content.classList.remove('active');
+      document.getElementById(`tab-float-${id}`)?.remove();
+      if (mode === 'hidden') {
+        // Just gone: keep the tab button hidden + content inactive. Bring it back
+        // via the VIEW chip (→ float) or right-click → ドック.
+        if (tabBtn) tabBtn.style.display = 'none';
+      } else {
+        // dock (explicit): reveal CENTER + make it the active tab.
+        if (tabBtn) {
+          tabBtn.style.display = '';
+          this.layout.hidden = this.layout.hidden || {};
+          if (this.layout.hidden['panel-center']) {
+            this.layout.hidden['panel-center'] = false;
+            this.saveLayout();
+            this.applyTopVisibility();
+          }
+          tabBtn.click(); // switch to the freshly-docked tab so it's on screen
+        }
+      }
+    }
+    this.updateTabChip(id);
+    this._pokeRelayout(); // canvas re-measure (phase pad / EASE graph etc.)
+  }
+
+  // Reflect a floatable PANEL's mode: 'float' (moved into an overlay window),
+  // 'dock' (back in its row) or 'hidden' (in its row's DOM but display:none, so
+  // the grid recompute drops it).
+  applyPanelMode(id: string) {
+    const mode = this.getTabMode(id);
+    const panel = document.getElementById(id);
+    const def = FLOATABLE_PANELS.find(p => p.id === id);
+    if (!panel || !def) return;
+
+    if (mode === 'float') {
+      panel.style.display = '';
+      const win = this.ensureTabFloatWindow(id);
+      if (panel.parentElement !== win) win.appendChild(panel);
+      this.positionTabFloat(id);
+    } else {
+      // dock / hidden: re-render the group FIRST — renderGroup does
+      // container.appendChild on the panel, which MOVES it out of its float
+      // window back into its ordered slot. Only THEN remove the now-empty window.
+      // (Removing the window first would delete the panel along with it — it's the
+      // window's child — which made the panel vanish and later floats show empty.)
+      const group = this._groups[def.group];
+      if (group) this.renderGroup(group);
+      document.getElementById(`tab-float-${id}`)?.remove();
+      panel.style.display = (mode === 'hidden') ? 'none' : '';
+    }
+    // Recompute the affected row's grid so remaining panels fill the space.
+    if (def.group === 'synth-main') this.applyTopVisibility();
+    else this.applyBottomVisibility();
+    this.saveLayout();
+    this.updateTabChip(id);
+    this._pokeRelayout();
+  }
+
+  // Rebuild #panel-bottom's grid template from whatever panels are still docked
+  // there (VCO LOOP / DRAWING). Mirrors applyTopVisibility for the bottom row.
+  applyBottomVisibility() {
+    const bottom = document.getElementById('panel-bottom');
+    if (!bottom) return;
+    const children = Array.from(bottom.children) as HTMLElement[];
+    const isPanel = (el?: HTMLElement) => !!el && el.classList.contains('panel');
+
+    // A handle is only meaningful between two docked panels.
+    children.forEach((child, i) => {
+      if (!child.classList.contains('panel-resize-handle')) return;
+      child.style.display = (isPanel(children[i - 1]) && isPanel(children[i + 1])) ? '' : 'none';
+    });
+
+    const panelCount = children.filter(isPanel).length;
+    const track = (el: HTMLElement) => {
+      if (el.classList.contains('panel-resize-handle')) return '10px';
+      // Only honour the saved split when both panels are present; a lone panel fills.
+      if (el.id === 'vco-loop-panel' && panelCount > 1) return 'var(--col-bottom-1, 1fr)';
+      return 'minmax(0, 1fr)';
+    };
+    const gridChildren = children.filter(c =>
+      c.classList.contains('panel-resize-handle') ? c.style.display !== 'none' : isPanel(c));
+    bottom.style.gridTemplateColumns = gridChildren.map(track).join(' ');
+  }
+
+  // ✕ on a float window drops to the unit's resting state: tabs → hidden, EFFECTS
+  // → hidden, VCO/DRAWING → dock.
+  closeFloat(id: string) {
+    this.setTabMode(id, isFloatablePanel(id) ? panelOff(id) : 'hidden');
+  }
+
+  ensureTabFloatWindow(id: string): HTMLElement {
+    const existing = document.getElementById(`tab-float-${id}`);
+    if (existing) return existing;
+
+    const label = FLOATABLE_TABS.find(t => t.id === id)?.label
+      || FLOATABLE_PANELS.find(p => p.id === id)?.label || id.toUpperCase();
+    const win = document.createElement('div');
+    win.className = 'tab-float' + (isFloatablePanel(id) ? ' tab-float-panel' : '');
+    win.id = `tab-float-${id}`;
+
+    const header = document.createElement('div');
+    header.className = 'panel-float-header';
+    header.innerHTML = `<span class="pfh-grip">⠿</span><span class="pfh-title">${label}</span>`;
+    const close = document.createElement('button');
+    close.className = 'pfh-close';
+    close.title = (isFloatablePanel(id) && panelOff(id) === 'dock')
+      ? 'ドックに戻す' : '非表示（ドックは右クリック→ドック）';
+    close.textContent = '✕';
+    close.addEventListener('click', () => this.closeFloat(id));
+    header.appendChild(close);
+    win.appendChild(header);
+
+    document.body.appendChild(win);
+    this.makeTabFloatDraggable(id, win, header);
+    return win;
+  }
+
+  // Clamp + apply the floating window's position (saved, or a cascaded default).
+  positionTabFloat(id: string) {
+    const win = document.getElementById(`tab-float-${id}`);
+    if (!win) return;
+    const tabIdx = FLOATABLE_TABS.findIndex(t => t.id === id);
+    const idx = Math.max(0, tabIdx >= 0 ? tabIdx : FLOATABLE_PANELS.findIndex(p => p.id === id));
+    const saved = this.layout.tabFloatPos[id];
+    const w = win.offsetWidth || 360;
+    // Default: cascade near the right edge so multiple pop-outs don't fully overlap.
+    const rawLeft = saved ? saved.left : Math.max(0, window.innerWidth - w - 24 - idx * 28);
+    const rawTop = saved ? saved.top : 90 + idx * 28;
+    win.style.left = Math.max(0, Math.min(window.innerWidth - w, rawLeft)) + 'px';
+    win.style.top = Math.max(0, Math.min(window.innerHeight - 40, rawTop)) + 'px';
+  }
+
+  makeTabFloatDraggable(id: string, win: HTMLElement, header: HTMLElement) {
+    let startX = 0, startY = 0, startLeft = 0, startTop = 0;
+    const onMove = (e: PointerEvent) => {
+      const w = win.offsetWidth;
+      const left = Math.max(0, Math.min(window.innerWidth - w, startLeft + (e.clientX - startX)));
+      const top = Math.max(0, Math.min(window.innerHeight - 40, startTop + (e.clientY - startY)));
+      win.style.left = left + 'px';
+      win.style.top = top + 'px';
+    };
+    const onUp = (e: PointerEvent) => {
+      header.releasePointerCapture(e.pointerId);
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      header.classList.remove('dragging');
+      this.layout.tabFloatPos[id] = {
+        left: parseInt(win.style.left, 10) || 0,
+        top: parseInt(win.style.top, 10) || 0,
+      };
+      this.saveLayout();
+    };
+    header.addEventListener('pointerdown', (e: PointerEvent) => {
+      if (e.button !== 0) return;
+      if ((e.target as HTMLElement).closest('.pfh-close')) return; // let ✕ through
+      e.preventDefault();
+      const r = win.getBoundingClientRect();
+      startX = e.clientX; startY = e.clientY;
+      startLeft = r.left; startTop = r.top;
+      header.setPointerCapture(e.pointerId);
+      header.classList.add('dragging');
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    });
+  }
+
+  updateTabChip(id: string) {
+    const mode = this.getTabMode(id);
+    // Panels: lit whenever shown (docked OR floated) — VCO/DRAWING sit docked and
+    // should read as ON. Tabs: lit only when floated (docked tabs live in the
+    // strip and their chip staying lit would be noise).
+    const active = isFloatablePanel(id) ? (mode !== 'hidden') : (mode === 'float');
+    this._chips[`tab-${id}`]?.classList.toggle('active', active);
+  }
+
   // ===== PERSISTENCE =====
 
   // Default view: the secondary blocks start HIDDEN so the app opens focused on
@@ -192,18 +507,39 @@ class PanelLayout {
       const raw = localStorage.getItem(this.storageKey);
       if (raw) {
         const parsed = JSON.parse(raw);
-        return {
+        const tabMode = parsed.tabMode || {};
+        // One-time migration for layouts saved before the unified float VIEW bar:
+        // adopt SETTINGS-floats-by-default so it doesn't open docked on old state.
+        const needsMigration = (parsed.v || 0) < LAYOUT_VERSION;
+        if (needsMigration && tabMode['panel-effects'] === undefined) {
+          tabMode['panel-effects'] = 'hidden';
+        }
+        const result: LayoutData = {
           sizes: parsed.sizes || {},
           order: parsed.order || {},
-          // Respect an explicit saved map; fall back to the hidden-by-default view.
           hidden: parsed.hidden || this.defaultHidden(),
           collapsed: parsed.collapsed || {},
-          settingsFloat: !!parsed.settingsFloat,
+          settingsFloat: needsMigration ? true : !!parsed.settingsFloat,
           settingsFloatPos: parsed.settingsFloatPos || null,
+          tabMode,
+          tabFloatPos: parsed.tabFloatPos || {},
+          v: LAYOUT_VERSION,
         };
+        // Persist the migration so it's applied exactly once (later a user dock
+        // toggle saves settingsFloat:false + v, and won't be re-forced on reload).
+        if (needsMigration) {
+          try { localStorage.setItem(this.storageKey, JSON.stringify(result)); } catch (e) {}
+        }
+        return result;
       }
     } catch (e) {}
-    return { sizes: {}, order: {}, hidden: this.defaultHidden(), collapsed: {}, settingsFloat: false, settingsFloatPos: null };
+    // Fresh install (no saved layout): SETTINGS starts FLOATING + visible, EFFECTS
+    // hidden, CENTER + its tabs docked.
+    return {
+      sizes: {}, order: {}, hidden: {}, collapsed: {},
+      settingsFloat: true, settingsFloatPos: null,
+      tabMode: { 'panel-effects': 'hidden' }, tabFloatPos: {}, v: LAYOUT_VERSION,
+    };
   }
 
   saveLayout() {
@@ -234,17 +570,22 @@ class PanelLayout {
     });
 
     const group = { containerId, container, order, resizeHandles };
+    this._groups[containerId] = group;
     this.renderGroup(group);
     this.makeReorderable(group);
   }
 
   // Rebuilds the container's children as: panel, handle, panel, handle, panel
-  // so resize handles always sit between the *current* slot order.
+  // so resize handles always sit between the *current* slot order. Panels that
+  // are currently floating are skipped — they live in their float window, and
+  // re-appending them here would silently yank them back into the grid.
   renderGroup(group: PanelGroup) {
     const { container, order } = group;
     container.querySelectorAll(':scope > .panel-resize-handle').forEach((h) => h.remove());
 
-    const panels = order.map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
+    const panels = order
+      .filter((id) => this.getTabMode(id) !== 'float')
+      .map((id) => document.getElementById(id)).filter(Boolean) as HTMLElement[];
     panels.forEach((panel, i) => {
       container.appendChild(panel);
       if (i < panels.length - 1) {
@@ -392,6 +733,7 @@ class PanelLayout {
         // Reorder recreated the resize handles; re-apply show/hide state so the
         // grid template + handle visibility stay consistent with reality.
         if (group.containerId === 'synth-main') this.applyTopVisibility();
+        else if (group.containerId === 'panel-bottom') this.applyBottomVisibility();
       });
     });
   }
@@ -410,29 +752,53 @@ class PanelLayout {
     label.textContent = 'VIEW';
     bar.appendChild(label);
 
-    TOGGLEABLE_PANELS.forEach(({ id, label: text }, i) => {
-      const chip = document.createElement('button');
-      chip.className = 'panel-toggle-chip';
-      chip.textContent = text;
-      chip.title = `${text} パネルの表示 / 非表示 (F${i + 1})`;
-      chip.addEventListener('click', () => this.togglePanel(id));
-      this._chips[id] = chip;
-      bar.appendChild(chip);
+    // SETTINGS float chip — uses the settings-float mechanism (fixed-position
+    // overlay), not the move-into-window path, but presents the same way.
+    const sChip = document.createElement('button');
+    sChip.className = 'panel-toggle-chip panel-toggle-chip-float';
+    sChip.textContent = 'SETTINGS';
+    sChip.title = 'SETTINGS フロート / ドック（右クリックで切替）';
+    sChip.addEventListener('click', () => this.setSettingsFloat(!this.layout.settingsFloat));
+    sChip.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+      showMenu(e.clientX, e.clientY, this.settingsMenu());
     });
+    this._chips['tab-panel-synth'] = sChip;
+    bar.appendChild(sChip);
+
+    // One float chip per floatable unit (tabs + panels). Left-click toggles
+    // float ↔ its resting state (tabs & EFFECTS → hidden; VCO/DRAWING → dock);
+    // right-click opens the full Float / Dock / 非表示 menu.
+    const addFloatChip = (id: string, text: string) => {
+      const off = isFloatablePanel(id) ? panelOff(id) : 'hidden';
+      const chip = document.createElement('button');
+      chip.className = 'panel-toggle-chip panel-toggle-chip-float';
+      chip.textContent = text;
+      chip.title = `${text} フロート / ${off === 'dock' ? 'ドック' : '非表示'}（右クリックで切替）`;
+      chip.addEventListener('click', () =>
+        this.setTabMode(id, this.getTabMode(id) === 'float' ? off : 'float'));
+      chip.addEventListener('contextmenu', (e) => {
+        e.preventDefault();
+        e.stopPropagation(); // don't also trigger the document-level menu handler
+        showMenu(e.clientX, e.clientY, this.tabModeMenu(id));
+      });
+      this._chips[`tab-${id}`] = chip;
+      bar.appendChild(chip);
+    };
+    FLOATABLE_TABS.forEach(({ id, label: text }) => addFloatChip(id, text));
+    FLOATABLE_PANELS.forEach(({ id, label: text }) => addFloatChip(id, text));
 
     header.appendChild(bar);
+  }
 
-    // Keyboard shortcuts: F1/F2/F3 toggle each secondary panel without looking
-    // away from the main workspace (Tweeq principle: gestural/keyboard inputs
-    // that don't demand visual attention).
-    document.addEventListener('keydown', (e) => {
-      if ((e.target as HTMLElement).closest('input, textarea, select')) return;
-      const idx = ['F1', 'F2', 'F3'].indexOf(e.key);
-      if (idx >= 0 && TOGGLEABLE_PANELS[idx]) {
-        e.preventDefault(); // suppress browser help (F1) etc.
-        this.togglePanel(TOGGLEABLE_PANELS[idx].id);
-      }
-    });
+  // Float / Dock menu for the SETTINGS chip (right-click).
+  settingsMenu(): MenuItem[] {
+    const f = !!this.layout.settingsFloat;
+    return [
+      { label: (f ? '● ' : '○ ') + 'フロート', disabled: f, action: () => this.setSettingsFloat(true) },
+      { label: (!f ? '● ' : '○ ') + 'ドック', disabled: !f, action: () => this.setSettingsFloat(false) },
+    ];
   }
 
   togglePanel(id: string) {
@@ -454,14 +820,18 @@ class PanelLayout {
 
     // 1) Panels. panel-synth in float mode is shown as a fixed overlay (CSS),
     //    so it stays out of the grid flow — it's treated as grid-absent below.
+    //    A panel floated via the new window mechanism (EFFECTS) is moved OUT of
+    //    #synth-main entirely, so it's naturally absent from main.children below.
     TOGGLEABLE_PANELS.forEach(({ id }) => {
       const el = document.getElementById(id);
-      if (el) el.style.display = hidden[id] ? 'none' : '';
+      // Don't fight the float window for a panel that's been popped out.
+      if (el && el.parentElement === main) el.style.display = hidden[id] ? 'none' : '';
     });
 
-    // A panel counts as "in the grid" only if visible AND not floating.
+    // A panel counts as "in the grid" only if it's actually a child of the row,
+    // visible, and not the floating SETTINGS overlay.
     const inGrid = (el?: HTMLElement) =>
-      !!el && el.style.display !== 'none'
+      !!el && el.parentElement === main && el.style.display !== 'none'
       && !(floatSettings && el.id === 'panel-synth');
 
     // 2) Resize handles: a handle is only meaningful between two in-grid panels.
@@ -483,9 +853,10 @@ class PanelLayout {
       c.classList.contains('panel-resize-handle') ? c.style.display !== 'none' : inGrid(c));
     main.style.gridTemplateColumns = gridChildren.map(track).join(' ');
 
-    // 4) Collapse the top row entirely when nothing occupies the grid.
-    const anyInGrid = TOGGLEABLE_PANELS.some(({ id }) =>
-      inGrid(document.getElementById(id) as HTMLElement));
+    // 4) Collapse the top row entirely when no panel occupies the grid (count any
+    //    in-grid panel — incl. panel-center, which no longer has a VIEW chip).
+    const anyInGrid = children.some(c =>
+      !c.classList.contains('panel-resize-handle') && inGrid(c));
     document.body.classList.toggle('top-collapsed', !anyInGrid);
 
     // 5) Sync chip highlight (active = panel visible).
@@ -494,7 +865,19 @@ class PanelLayout {
     });
 
     // 6) Panels that were resized/re-shown may need a redraw (canvas re-measure).
+    this._pokeRelayout();
+  }
+
+  // Nudge canvas-backed editors to re-measure after a layout change. The sync
+  // event covers observers that read immediately; the rAF passes catch those
+  // that need the browser to have actually laid out the new size first (e.g. a
+  // panel/tab just moved into a float window).
+  _pokeRelayout() {
     window.dispatchEvent(new Event('resize'));
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new Event('resize'));
+      requestAnimationFrame(() => window.dispatchEvent(new Event('resize')));
+    });
   }
 
 }

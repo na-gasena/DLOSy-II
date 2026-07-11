@@ -2882,3 +2882,272 @@ body.settings-float #panel-synth > .panel-float-header {
 body.settings-float #panel-synth > .panel-drag-grip {
   display: none;
 }
+
+/* ===== CENTER TAB — FLOATING (pop-out) WINDOWS (PHASE / GLYPH) ===== */
+/* A popped-out CENTER tab lives in its own fixed overlay. It needs a definite
+   size because the tab bodies (e.g. the square Lissajous pad) size themselves
+   from the container height via flex. resize:both lets the user rescale it. */
+.tab-float {
+  position: fixed;
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  width: 420px;
+  height: 540px;
+  min-width: 260px;
+  min-height: 200px;
+  max-width: 92vw;
+  max-height: calc(100vh - 40px);
+  background: var(--bg-panel);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--panel-radius);
+  box-shadow: 0 24px 64px rgba(0, 0, 0, 0.6);
+  padding: 0 14px 14px;
+  overflow: auto;
+  resize: both;
+}
+
+/* Canvases inside a float window must never force horizontal overflow — fit the
+   window width (their backing store re-measures via ResizeObserver / _pokeRelayout). */
+.tab-float canvas {
+  max-width: 100%;
+}
+
+/* EASE graph: fill the float window's remaining height instead of its fixed
+   240px, so the whole curve is visible (the backing store re-measures on the
+   resulting size change). */
+.tab-float .ease-canvas-wrap {
+  flex: 1 1 auto;
+  min-height: 160px;
+  display: flex;
+}
+.tab-float #ease-canvas {
+  width: 100%;
+  height: 100%;
+}
+
+/* Reuse the SETTINGS-float header look for the pop-out title bar. */
+.tab-float > .panel-float-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  position: sticky;
+  top: 0;
+  margin: 0 -14px 10px;
+  padding: 6px 12px;
+  background: var(--bg-header);
+  border-bottom: 1px solid var(--border-groove);
+  border-radius: var(--panel-radius) var(--panel-radius) 0 0;
+  cursor: grab;
+  user-select: none;
+  z-index: 1;
+  flex: 0 0 auto;
+}
+
+.tab-float > .panel-float-header.dragging { cursor: grabbing; }
+
+.pfh-close {
+  margin-left: auto;
+  background: transparent;
+  border: none;
+  color: var(--text-label);
+  font-size: 12px;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.pfh-close:hover { color: var(--text-primary); background: rgba(255, 255, 255, 0.08); }
+
+/* Force the popped-out tab content visible + filling regardless of .active (the
+   tab-switch logic toggles .active on the docked strip, which no longer owns
+   this node). */
+.tab-float > .center-tab-content {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+
+/* ARP is flow content taller than the window — let it keep its natural height so
+   the window scrolls, instead of being squeezed to window height and clipped. */
+.tab-float > #center-tab-arp {
+  flex: 0 0 auto;
+}
+
+/* Whole PANELS (EFFECTS / VCO LOOP / DRAWING) float in a wider window and drop
+   their own panel chrome (the window supplies the frame). */
+.tab-float-panel {
+  width: 560px;
+  height: 440px;
+}
+
+.tab-float > .panel {
+  position: static;
+  flex: 1 1 auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  height: auto;
+  overflow: auto;
+}
+
+/* The reorder grip is meaningless once a panel is floated out of its row. */
+.tab-float > .panel > .panel-drag-grip { display: none; }
+
+/* VIEW-bar float chips (PHASE / GLYPH): active = currently floating. A cyan
+   tint distinguishes them from the red panel-visibility chips. */
+.panel-toggle-chip-float.active {
+  background: linear-gradient(180deg, #12343a, #0e2a30);
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 8px rgba(34, 217, 242, 0.35);
+}
+
+/* ===== STEREO PHASE (Lissajous pad) ===== */
+#center-tab-phase.active {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
+.phase-pad-wrap {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+#phase-scope {
+  aspect-ratio: 1 / 1;
+  height: 100%;
+  max-height: 100%;
+  max-width: 100%;
+  border: 1px solid var(--border-panel);
+  border-radius: var(--panel-radius);
+  background: #0b0c10;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+#phase-scope.dragging {
+  border-color: var(--accent-cyan);
+  box-shadow: 0 0 16px rgba(34, 217, 242, 0.3);
+}
+
+.phase-readout {
+  position: absolute;
+  left: 50%;
+  bottom: 14px;
+  transform: translateX(-50%);
+  padding: 3px 12px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--control-radius);
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--accent-cyan);
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+/* ===== STEREO PHASE — mode / chips / readout ===== */
+.phase-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  flex-wrap: wrap;
+  margin-bottom: 6px;
+}
+
+.phase-mode {
+  display: flex;
+  gap: 4px;
+}
+
+.phase-mode-btn {
+  width: auto;
+  padding: 4px 12px;
+  font-size: 10px;
+  letter-spacing: 1px;
+  white-space: nowrap;
+}
+
+.phase-mode-btn.active {
+  background: var(--accent-cyan);
+  color: #000;
+  border-color: var(--accent-cyan);
+  font-weight: bold;
+}
+
+.phase-chips {
+  display: flex;
+  gap: 4px;
+}
+
+.phase-chip {
+  min-width: 42px;
+  padding: 4px 8px;
+  background: var(--btn-surface);
+  border: 1px solid var(--border-panel);
+  border-radius: var(--control-radius);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  cursor: pointer;
+  transition: all 0.12s;
+  white-space: nowrap;
+}
+
+.phase-chip:hover {
+  border-color: var(--accent-cyan);
+  color: var(--text-primary);
+}
+
+.phase-chip.active {
+  background: var(--accent-cyan);
+  border-color: var(--accent-cyan);
+  color: #000;
+  font-weight: bold;
+}
+
+.phase-readout b {
+  display: block;
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--accent-cyan);
+  text-align: center;
+  letter-spacing: 1px;
+}
+
+.phase-readout span {
+  display: block;
+  font-size: 10px;
+  color: var(--text-secondary);
+  text-align: center;
+  margin-top: 2px;
+}
+
+.phase-hint {
+  position: absolute;
+  top: 50%;
+  right: calc(50% - 192px);
+  transform: translateY(-50%);
+  font-size: 22px;
+  color: var(--text-label);
+  opacity: 0.45;
+  pointer-events: none;
+  transition: opacity 0.15s;
+}
+
+.phase-pad-wrap:hover .phase-hint {
+  opacity: 0.12;
+}

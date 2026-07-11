@@ -63,6 +63,13 @@ class VCOLoop {
   chainPos: number;
   _lastTickStep: number;
   _chainGen: number;
+  // Chain advance is keyed to completed modulation LOOPS, not sequencer bars, so
+  // it stays correct at any seek RATE (×2 sweeps the loop twice per bar → advance
+  // twice per bar; ½ sweeps once per two bars → advance every two bars). _barCount
+  // counts elapsed bars; _lastLoopIndex is the last floor((bar+phase)*rate) seen.
+  _barCount: number = 0;
+  _lastLoopIndex: number = 0;
+  _chainLoopRebase: boolean = true; // re-baseline (no advance) on start / rate change
   baseFreq: number = 220;
   isDrawingOsc: boolean = false;
   _drawSplitter: ChannelSplitterNode | null = null;
@@ -108,8 +115,12 @@ class VCOLoop {
     // Points: { x: 0-1 (time normalized), y: 0-1 (value normalized) }
     this.curves = {
       frequency:  { points: [{x:0, y:0.3}, {x:0.5, y:0.6}, {x:1, y:0.3}], min: 65, max: 2000, label: 'FREQ', log: true },
-      cutoff:     { points: [{x:0, y:0.7}, {x:1, y:0.7}], min: 100, max: 5000, label: 'CUTOFF', log: true },
-      resonance:  { points: [{x:0, y:0.2}, {x:1, y:0.2}], min: 0, max: 30, label: 'RES' },
+      // Filter defaults = "effect off": CUTOFF fully open (top = 5000 Hz, above
+      // the whole FREQ range) and RES at the bottom (Q≈0, no resonant peak). So
+      // the filter is transparent and the oscillator amplitude stays constant
+      // across pitch (no confusing high-pitch loudness boost by default).
+      cutoff:     { points: [{x:0, y:1}, {x:1, y:1}], min: 100, max: 5000, label: 'CUTOFF', log: true },
+      resonance:  { points: [{x:0, y:0}, {x:1, y:0}], min: 0, max: 30, label: 'RES' },
       volume:     { points: [{x:0, y:0.5}, {x:1, y:0.5}], min: 0, max: 1, label: 'VOL' },
       adsr:       { points: [{x:0, y:0}, {x:0.05, y:1}, {x:0.2, y:0.6}, {x:0.8, y:0.6}, {x:1, y:0}], min: 0, max: 1, label: 'ADSR', stepOnly: true },
     };
@@ -215,11 +226,12 @@ class VCOLoop {
         }
       });
     } else {
-      // Reset to defaults
+      // Reset to defaults (filter effect OFF: CUTOFF top / RES bottom)
       this.curves.frequency.points = [{x:0, y:0.3}, {x:0.5, y:0.6}, {x:1, y:0.3}];
-      this.curves.cutoff.points = [{x:0, y:0.7}, {x:1, y:0.7}];
+      this.curves.cutoff.points = [{x:0, y:1}, {x:1, y:1}];
+      this.curves.resonance.points = [{x:0, y:0}, {x:1, y:0}];
       Object.keys(this.curves).forEach(k => {
-        if (k !== 'frequency' && k !== 'cutoff') {
+        if (k !== 'frequency' && k !== 'cutoff' && k !== 'resonance') {
           this.curves[k].points = [{x:0, y:0.5}, {x:1, y:0.5}];
         }
       });
@@ -652,6 +664,9 @@ class VCOLoop {
 
     const freq = this.getValueAt('frequency', pos);
     const vol = this.getValueAt('volume', pos);
+    // Report the live pitch so the stereo-phase DEG mode can hold a constant
+    // phase angle across this voice's frequency sweep.
+    if (this.enabled) audioEngine.currentPitchHz = freq;
 
     const cutoff = this.getValueAt('cutoff', pos);
     const res = this.getValueAt('resonance', pos);
@@ -731,15 +746,26 @@ class VCOLoop {
   onStepTick(stepIndex: number, totalSteps: number, whenMs?: number) {
     if (!this.enabled) return;
 
-    // Pattern chaining: advance one pattern per loop cycle (when the bar wraps).
-    // The lookahead scheduler can fire many steps in a single burst (especially
-    // when the tab is hidden, with a 2s schedule window), so advancing here at
-    // schedule time would jump several patterns at once. Defer the advance to
-    // the step's actual audio time so switches stay aligned with what's heard.
-    if (this.chainMode !== 'off' && stepIndex < this._lastTickStep) {
-      this._scheduleChainAdvance(whenMs);
-    }
+    // Bar bookkeeping: bump the elapsed-bar counter each time the step wraps.
+    const freshRun = this._lastTickStep === -1;
+    if (stepIndex < this._lastTickStep) this._barCount++;
     this._lastTickStep = stepIndex;
+
+    // Pattern chaining: advance ONCE PER COMPLETED MODULATION LOOP (not per bar).
+    // The playhead sweeps the loop `rate` times per bar, so keying the advance to
+    // loop completions keeps "one pattern = one full sweep" at every seek speed —
+    // fixing ×2/×4, where per-bar advancing made each pattern repeat rate times.
+    // The advance is deferred to the step's real audio time (the lookahead
+    // scheduler can burst many steps at once) so switches stay aligned to sound.
+    if (this.chainMode !== 'off') {
+      const loopIndex = Math.floor((this._barCount + stepIndex / totalSteps) * this.rate);
+      if (freshRun || this._chainLoopRebase) {
+        this._chainLoopRebase = false; // establish a baseline without advancing
+      } else if (loopIndex > this._lastLoopIndex) {
+        for (let i = this._lastLoopIndex; i < loopIndex; i++) this._scheduleChainAdvance(whenMs);
+      }
+      this._lastLoopIndex = loopIndex;
+    }
 
     this.lastStepIndex = stepIndex;
     this.lastTotalSteps = totalSteps;
@@ -824,6 +850,8 @@ class VCOLoop {
     if (!this.enabled) return;
     if (!audioEngine.isInitialized) return;
     this._lastTickStep = -1; // fresh bar detection for this run
+    this._barCount = 0;
+    this._chainLoopRebase = true; // baseline the chain-loop counter for this run
     this.startOsc();
     if (this.continuousMode) {
       this.startContinuousLoop();
@@ -975,7 +1003,9 @@ class VCOLoop {
   // ===== CURVE PRESETS =====
   static get CURVE_PRESETS(): Record<string, { label: string; points: CurvePoint[] | null }> {
     return {
-      flat:     { label: '━━', points: [{x:0, y:0.5}, {x:1, y:0.5}] },
+      top:      { label: '▔▔', points: [{x:0, y:1}, {x:1, y:1}] },   // flat at max
+      flat:     { label: '━━', points: [{x:0, y:0.5}, {x:1, y:0.5}] }, // flat at center
+      bottom:   { label: '▁▁', points: [{x:0, y:0}, {x:1, y:0}] },   // flat at min
       rampUp:   { label: '╱',  points: [{x:0, y:0}, {x:1, y:1}] },
       rampDown: { label: '╲',  points: [{x:0, y:1}, {x:1, y:0}] },
       triangle: { label: '╱╲', points: [{x:0, y:0}, {x:0.5, y:1}, {x:1, y:0}] },
@@ -1205,6 +1235,9 @@ class VCOLoop {
     this._all('.vco-rate-btn').forEach(btn => {
       btn.addEventListener('click', () => {
         this.rate = parseFloat(btn.dataset.rate ?? '1');
+        // Re-baseline the chain-loop counter so the rate change doesn't burst a
+        // batch of advances from the jump in loopIndex.
+        this._chainLoopRebase = true;
         this._all('.vco-rate-btn').forEach(b => b.classList.toggle('active', b === btn));
       });
     });
@@ -1214,6 +1247,10 @@ class VCOLoop {
       if (this.activeParam === 'adsr') {
         // Restore default ADSR shape
         curve.points = [{x:0, y:0}, {x:0.05, y:1}, {x:0.2, y:0.6}, {x:0.8, y:0.6}, {x:1, y:0}];
+      } else if (this.activeParam === 'cutoff') {
+        curve.points = [{x: 0, y: 1}, {x: 1, y: 1}]; // effect off: fully open
+      } else if (this.activeParam === 'resonance') {
+        curve.points = [{x: 0, y: 0}, {x: 1, y: 0}]; // effect off: no resonance
       } else {
         curve.points = [{x: 0, y: 0.5}, {x: 1, y: 0.5}];
       }

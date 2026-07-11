@@ -33,7 +33,7 @@ class MidiIn {
   configKey: string;
   reverseLearnDev: string | null;
   reverseCC: number | null;
-  _reverseClickHandler: ((e: MouseEvent) => void) | null;
+  _reverseClickHandler: ((e: PointerEvent) => void) | null;
   banks: MidiBank[];
   activeBank: number;
   selectedInput: MIDIInput | null;
@@ -616,6 +616,7 @@ class MidiIn {
       const entry = { target: targetDef.target, min: targetDef.min, max: targetDef.max };
 
       this.cancelReverseLearn();
+      this._ensureEnabledForLearn();
       if (dev === '2') {
         this.ccLearnTarget2 = entry;
         this.ccLearnActive2 = true;
@@ -687,15 +688,31 @@ class MidiIn {
     buildOptions(select);
     buildOptions(select2);
 
-    // --- TEMP DIAGNOSTIC (remove after debugging) ---
-    // enabled ゲートやデバイス選択に関係なく、全入力の生メッセージをログする。
-    // これで「ハードから信号が来ているか」を確実に確認できる。
+    // --- ALL-INPUT LISTENER ---
+    // Attach to every input (regardless of the `enabled` gate or which device is
+    // selected as IN1/IN2). Two jobs:
+    //   1) LEARN routing: while a LEARN is armed, capture a CC from any input so
+    //      you can learn from a controller before assigning it to a slot.
+    //   2) Diagnostic log: confirm the hardware is actually sending (console).
     this.midiAccess.inputs.forEach(input => {
       if ((input as any)._dbgAttached) return;
       (input as any)._dbgAttached = true;
       try { input.open(); } catch (e) {}
       input.addEventListener('midimessage', (ev: MIDIMessageEvent) => {
-        console.log('[MIDI IN RAW]', input.name, Array.from(ev.data!),
+        const data = ev.data;
+        if (!data) return;
+        const [status, d1, d2] = data;
+        // While a LEARN is armed, capture a CC from ANY input that isn't already
+        // routed as IN1/IN2 (those flow through handleMessage). This lets you
+        // learn from a controller before it's assigned to a slot — no need to
+        // pick it in the IN1/IN2 dropdown first.
+        if ((status & 0xF0) === 0xB0 && this._learnArmed()
+            && input !== this.selectedInput && input !== this.selectedInput2) {
+          if (this.ccLearnActive2 || this.reverseLearnDev === '2') this.onCC2(d1, d2);
+          else this.onCC(d1, d2);
+          return;
+        }
+        console.log('[MIDI IN RAW]', input.name, Array.from(data),
                     '| enabled =', this.enabled,
                     '| selectedIN1 =', this.selectedInput?.name ?? '(none)');
       });
@@ -893,12 +910,31 @@ class MidiIn {
     this.updateStatus('CC' + cc + ' (IN' + dev + ') 削除');
   }
 
+  // True while any LEARN (forward IN1/IN2 or reverse) is waiting for a CC.
+  _learnArmed(): boolean {
+    return this.ccLearnActive || this.ccLearnActive2 || this.reverseLearnDev !== null;
+  }
+
+  // Arming LEARN implies "I want MIDI input now". Recognizing a device does NOT
+  // set `enabled`, and handleMessage() is gated on it — so without this, LEARN
+  // silently never sees any CC (the #1 "CC LEARN doesn't work" cause). Turn MIDI
+  // IN on (and (re)attach inputs) so the armed LEARN actually receives CCs.
+  _ensureEnabledForLearn() {
+    if (this.enabled) return;
+    this.enabled = true;
+    document.getElementById('midi-in-toggle')?.classList.add('midi-active');
+    if (!this.midiAccess) this.connectMIDI();
+    else this.populateInputs();
+    this.saveConfig();
+  }
+
   // ===== REVERSE LEARN =====
   // Move a CC first; it gets captured, then click any on-screen control that
   // carries data-midi-target or data-param to bind it.
 
   armReverseLearn(dev: string) {
     this.cancelReverseLearn();
+    this._ensureEnabledForLearn();
     this.ccLearnActive = false;
     this.ccLearnActive2 = false;
     document.getElementById('midi-in-learn')?.classList.remove('active');
@@ -916,8 +952,12 @@ class MidiIn {
     document.body.classList.add('midi-reverse-pick');
     this.updateStatus('CC' + ccNumber + ' 検出 — 対象をクリック');
 
-    // One-shot capture-phase click handler to grab the target control
-    this._reverseClickHandler = (e: MouseEvent) => {
+    // One-shot capture-phase handler to grab the target control. NOTE: uses
+    // `pointerdown`, not `click` — knobs/sliders call preventDefault() in their
+    // own pointerdown, which suppresses the click event entirely, so a `click`
+    // listener would never fire when you pick a knob (the REVERSE LEARN bug).
+    // Capture phase runs document→target, so we intercept before the control.
+    this._reverseClickHandler = (e: PointerEvent) => {
       // Ignore clicks inside the MIDI panel itself (e.g. cancel)
       const tgt = e.target as HTMLElement;
       if (tgt.closest('#midi-in-panel')) {
@@ -927,11 +967,14 @@ class MidiIn {
       }
       const resolved = this.resolveTargetFromEl(tgt);
       if (!resolved) {
-        // Not a mappable control — keep waiting
+        // Not a mappable control (no data-param / data-midi-target) — tell the
+        // user instead of silently ignoring, and keep waiting for a valid target.
+        this.updateStatus('この操作子は割当不可 — 別の操作子をクリック');
         return;
       }
       e.preventDefault();
       e.stopPropagation();
+      e.stopImmediatePropagation(); // don't let the control start its own drag
 
       const map = this.reverseLearnDev === '2' ? this.ccMap2 : this.ccMap;
       map[this.reverseCC!] = { target: resolved.target ?? "", min: resolved.min, max: resolved.max };
@@ -942,14 +985,14 @@ class MidiIn {
       this.saveConfig();
       this.updateStatus('CC' + cc + ' → ' + resolved.label + ' (IN' + dev + ')');
     };
-    document.addEventListener('click', this._reverseClickHandler, true);
+    document.addEventListener('pointerdown', this._reverseClickHandler, true);
   }
 
   cancelReverseLearn() {
     this.reverseLearnDev = null;
     this.reverseCC = null;
     if (this._reverseClickHandler) {
-      document.removeEventListener('click', this._reverseClickHandler, true);
+      document.removeEventListener('pointerdown', this._reverseClickHandler, true);
       this._reverseClickHandler = null;
     }
     document.getElementById('midi-in-rlearn')?.classList.remove('active');

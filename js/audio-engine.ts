@@ -42,6 +42,20 @@ class AudioEngine {
   delayWet: GainNode | null;
   fxInput: GainNode | null = null;
   fxOutput: GainNode | null = null;
+  // Stereo phase stage (master path): up-mix to stereo, delay the R channel to
+  // create an L/R phase difference (waveform preserved), then tap L/R for the
+  // live XY (Lissajous) scope. Driven by the "PHASE" Lissajous pad.
+  phaseStereoize: GainNode | null = null;
+  phaseSplitter: ChannelSplitterNode | null = null;
+  phaseDelayR: DelayNode | null = null;
+  phaseMerger: ChannelMergerNode | null = null;
+  scopeTap: GainNode | null = null;
+  scopeAnalyserL: AnalyserNode | null = null;
+  scopeAnalyserR: AnalyserNode | null = null;
+  // Latest fundamental frequency set by any sound source (VCO Loop sweep, ARP
+  // note, one-shot playFreq…). The stereo-phase DEG mode reads this to keep a
+  // constant phase ANGLE as the pitch moves (delay = θ/360 / f).
+  currentPitchHz = 0;
   params: SynthParams;
   noteFreqs: Record<string, number>;
   octaveMultipliers: number[];
@@ -119,12 +133,46 @@ class AudioEngine {
     this.masterGain = this.ctx!.createGain();
     this.masterGain!.gain.value = this.params.masterVol;
 
-    // Effects chain insert point: masterGain → fxInput → [effects] → fxOutput → destination
+    // Effects chain insert point: masterGain → fxInput → [effects] → fxOutput
     this.fxInput = this.ctx!.createGain();
     this.fxOutput = this.ctx!.createGain();
     this.masterGain!.connect(this.fxInput);
     this.fxInput.connect(this.fxOutput); // bypass by default
-    this.fxOutput.connect(this.ctx!.destination);
+
+    // ---- Stereo phase stage + scope tap ----
+    // fxOutput → stereoize(force 2ch) → split → [L | R→delay] → merge → tap → dest
+    // A mono source (e.g. a plain sine) is up-mixed so both channels carry it;
+    // delaying R then yields a real L/R phase difference (an ellipse/circle on
+    // the XY scope). delayR=0 keeps them identical (a 45° line).
+    this.phaseStereoize = this.ctx!.createGain();
+    this.phaseStereoize.channelCount = 2;
+    this.phaseStereoize.channelCountMode = 'explicit';
+    this.phaseStereoize.channelInterpretation = 'speakers';
+
+    this.phaseSplitter = this.ctx!.createChannelSplitter(2);
+    this.phaseMerger = this.ctx!.createChannelMerger(2);
+    this.phaseDelayR = this.ctx!.createDelay(0.05); // up to 50 ms
+    this.phaseDelayR.delayTime.value = 0;
+
+    this.fxOutput.connect(this.phaseStereoize);
+    this.phaseStereoize.connect(this.phaseSplitter);
+    this.phaseSplitter.connect(this.phaseMerger, 0, 0);   // L → merger ch0
+    this.phaseSplitter.connect(this.phaseDelayR, 1);       // R → delay
+    this.phaseDelayR.connect(this.phaseMerger, 0, 1);      // delayed R → merger ch1
+
+    this.scopeTap = this.ctx!.createGain();
+    this.phaseMerger.connect(this.scopeTap);
+    this.scopeTap.connect(this.ctx!.destination);
+
+    // Split the final output for the live XY scope (separate L / R analysers).
+    const scopeSplitter = this.ctx!.createChannelSplitter(2);
+    this.scopeTap.connect(scopeSplitter);
+    this.scopeAnalyserL = this.ctx!.createAnalyser();
+    this.scopeAnalyserR = this.ctx!.createAnalyser();
+    this.scopeAnalyserL.fftSize = 2048;
+    this.scopeAnalyserR.fftSize = 2048;
+    scopeSplitter.connect(this.scopeAnalyserL, 0);
+    scopeSplitter.connect(this.scopeAnalyserR, 1);
 
     // Filter
     this.filter = this.ctx!.createBiquadFilter();
@@ -197,6 +245,7 @@ class AudioEngine {
 
     const freq = this.getNoteFreq(noteName);
     if (!freq) return;
+    this.currentPitchHz = freq;
 
     const now = this.ctx!.currentTime;
     const { envAttack, envDecay, envSustain, envRelease, synthVol } = this.params;
@@ -230,6 +279,7 @@ class AudioEngine {
 
   playFreq(freq: number) {
     if (!this.isInitialized) return;
+    this.currentPitchHz = freq;
 
     const now = this.ctx!.currentTime;
     const { envAttack, envDecay, envSustain, envRelease, synthVol } = this.params;
@@ -268,6 +318,7 @@ class AudioEngine {
   playFreqWithDrawing(freq: number, waveX: ArrayLike<number>, waveY?: ArrayLike<number>) {
     if (!this.isInitialized) return;
     if (!waveX || waveX.length === 0) return;
+    this.currentPitchHz = freq;
 
     const now = this.ctx!.currentTime;
     const bufferLength = waveX.length;

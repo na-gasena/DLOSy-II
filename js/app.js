@@ -19,6 +19,7 @@ import { presetManager } from './preset-manager';
 import { audioSettings } from './audio-settings';
 import { arpeggiator } from './arpeggiator';
 import { vcoEase } from './vco-ease';
+import { stereoPhase } from './stereo-phase';
 import { panelLayout } from './panel-layout';
 import { initCommandPalette, registerCommands } from './command-palette';
 
@@ -75,6 +76,11 @@ document.addEventListener('DOMContentLoaded', () => {
   // Initialize VCO Loop Easing
   if (vcoEase) {
     vcoEase.init();
+  }
+
+  // Initialize Stereo Phase (Lissajous pad)
+  if (stereoPhase) {
+    stereoPhase.init();
   }
 
   // Initialize Panel Layout (drag-to-resize / drag-to-reorder)
@@ -186,13 +192,15 @@ document.addEventListener('DOMContentLoaded', () => {
   initCommandPalette();
   registerCommands([
     { id: 'transport.toggle', title: '再生 / 停止', hint: 'Space', run: () => document.getElementById('btn-play')?.click() },
-    // Panel visibility
-    { id: 'view.settings', title: 'パネル: SETTINGS 表示切替', hint: 'F1', run: () => panelLayout.togglePanel('panel-synth') },
-    { id: 'view.center',   title: 'パネル: CENTER 表示切替',   hint: 'F2', run: () => panelLayout.togglePanel('panel-center') },
-    { id: 'view.effects',  title: 'パネル: EFFECTS 表示切替',  hint: 'F3', run: () => panelLayout.togglePanel('panel-effects') },
+    // Panel float / dock (VIEW chips)
+    { id: 'view.settings', title: 'パネル: SETTINGS フロート切替', run: () => panelLayout.setSettingsFloat(!panelLayout.layout.settingsFloat) },
+    { id: 'view.effects',  title: 'パネル: EFFECTS フロート切替',  run: () => panelLayout.setTabMode('panel-effects', panelLayout.getTabMode('panel-effects') === 'float' ? 'hidden' : 'float') },
+    { id: 'view.vco',      title: 'パネル: VCO LOOP フロート切替', run: () => panelLayout.setTabMode('vco-loop-panel', panelLayout.getTabMode('vco-loop-panel') === 'float' ? 'dock' : 'float') },
+    { id: 'view.drawing',  title: 'パネル: DRAWING フロート切替',  run: () => panelLayout.setTabMode('drawing-panel', panelLayout.getTabMode('drawing-panel') === 'float' ? 'dock' : 'float') },
     // Center tabs
     { id: 'tab.arp',   title: 'タブ: ARP',   hint: 'Center', run: () => onCenterTabSwitch('arp') },
     { id: 'tab.ease',  title: 'タブ: EASE',  hint: 'Center', run: () => onCenterTabSwitch('ease') },
+    { id: 'tab.phase', title: 'タブ: PHASE (ステレオ位相)', hint: 'Center', run: () => onCenterTabSwitch('phase') },
     { id: 'tab.glyph', title: 'タブ: GLYPH', hint: 'Center', run: () => onCenterTabSwitch('glyph') },
     // Presets
     { id: 'preset.save', title: 'プリセット: ファイルに保存', run: () => presetManager?.saveToFile() },

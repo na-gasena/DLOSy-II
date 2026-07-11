@@ -391,6 +391,8 @@ class Arpeggiator {
   setBaseFreq(f: number, atTime?: number) {
     this.baseFreq = f;
     if (!this.isOscRunning) return;
+    // Report the playing pitch for the stereo-phase DEG (pitch-tracking) mode.
+    audioEngine.currentPitchHz = f;
     if (this.waveType === 'drawing') {
       const baseF = this._drawBaseF || 261.63;
       if (this.oscL?.playbackRate) {
@@ -573,9 +575,10 @@ class Arpeggiator {
   bindKeyboard() {
     document.addEventListener('keydown', (e) => {
       if (!this.enabled) return;
-      // Only process when ARP tab is active
+      // Process when the ARP tab is on screen: either the active docked tab OR
+      // popped out into its own float window (where it has no .active class).
       const arpTab = document.getElementById('center-tab-arp');
-      if (!arpTab || !arpTab.classList.contains('active')) return;
+      if (!arpTab || !(arpTab.classList.contains('active') || arpTab.closest('.tab-float'))) return;
       // Allow keys even when ARP sliders have focus (but block for text inputs)
       const tgt = e.target as HTMLElement;
       if (tgt.closest('textarea, select') || (tgt.tagName === 'INPUT' && (tgt as HTMLInputElement).type === 'text')) return;
