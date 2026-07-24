@@ -30,7 +30,10 @@ interface LayoutData {
 
 // Bump when new defaults should be force-applied ONCE to existing saved layouts.
 // v1: unified float VIEW bar — SETTINGS floats, EFFECTS rests hidden.
-const LAYOUT_VERSION = 1;
+// v2: chip = show/hide (never dock). VCO/DRAWING dock-on; ARP/EASE/PHASE/GLYPH/
+//     EFFECTS hidden-off.
+// v3: SETTINGS also starts hidden-off (shows as float when toggled on).
+const LAYOUT_VERSION = 3;
 
 // (The old red show/hide chips are gone — everything is a float chip now.) This
 // array stays only so the legacy display/grid helpers can iterate it; it is
@@ -49,17 +52,22 @@ const FLOATABLE_TABS: { id: string; label: string }[] = [
 ];
 
 // Whole panels (grid items) that can be popped out into a floating window. `id`
-// is the panel element; `group` is the layout group whose grid must be recomputed
-// when it floats/docks; `off` is the resting (non-float) state the chip toggles to.
-// EFFECTS rests HIDDEN (off by default); VCO/DRAWING rest DOCKED (always there).
-const FLOATABLE_PANELS: { id: string; label: string; group: string; off: string }[] = [
-  { id: 'panel-effects',  label: 'EFFECTS',  group: 'synth-main',  off: 'hidden' },
-  { id: 'vco-loop-panel', label: 'VCO LOOP', group: 'panel-bottom', off: 'dock' },
-  { id: 'drawing-panel',  label: 'DRAWING',  group: 'panel-bottom', off: 'dock' },
+// is the panel element; `group` is the layout group whose grid must be recomputed;
+// `on` is the SHOWN mode the chip toggles to (EFFECTS shows floating; VCO/DRAWING
+// show docked). The chip's OFF state is always 'hidden'.
+const FLOATABLE_PANELS: { id: string; label: string; group: string; on: string }[] = [
+  { id: 'panel-effects',  label: 'EFFECTS',  group: 'synth-main',  on: 'float' },
+  { id: 'vco-loop-panel', label: 'VCO LOOP', group: 'panel-bottom', on: 'dock' },
+  { id: 'drawing-panel',  label: 'DRAWING',  group: 'panel-bottom', on: 'dock' },
 ];
 
 const isFloatablePanel = (id: string) => FLOATABLE_PANELS.some(p => p.id === id);
-const panelOff = (id: string) => FLOATABLE_PANELS.find(p => p.id === id)?.off || 'dock';
+// The mode a unit shows in when its chip is toggled ON (OFF is always 'hidden').
+const shownMode = (id: string) => FLOATABLE_PANELS.find(p => p.id === id)?.on || 'float';
+
+// Units that start hidden (chip OFF) by default — everything except SETTINGS
+// (floats-on) and VCO LOOP / DRAWING (dock-on).
+const DEFAULT_HIDDEN_UNITS = ['arp', 'ease', 'phase', 'glyph', 'panel-effects'];
 
 interface PanelGroup {
   containerId: string;
@@ -135,30 +143,50 @@ class PanelLayout {
   }
 
   // ===== SETTINGS FLOAT (popover) MODE =====
-  // Renders the left SETTINGS panel as a floating overlay instead of a docked
-  // grid column, so VCO LOOP + DRAWING MODE get the full width. Toggled from
-  // the Settings modal; persisted.
-  setSettingsFloat(on: boolean) {
-    this.layout.settingsFloat = on;
-    // Switching to Floating is invisible if the SETTINGS panel is currently
-    // hidden (VIEW chips default to hidden) — the user picks "Floating" and
-    // sees no change at all, which reads as "the setting didn't apply".
-    // Auto-reveal the panel so the effect is immediately visible.
-    if (on) {
-      this.layout.hidden = this.layout.hidden || {};
+  // The SETTINGS panel has three modes like every other unit: 'float' (fixed
+  // overlay), 'dock' (grid column) and 'hidden'. It keeps its own fixed-position
+  // float mechanism (rather than the move-into-window path); float vs dock is
+  // `settingsFloat`, and hidden is tracked in the hidden map under 'panel-synth'.
+  _settingsShown() { return !this.layout.hidden?.['panel-synth']; }
+
+  setSettingsMode(mode: string) {
+    this.layout.hidden = this.layout.hidden || {};
+    if (mode === 'hidden') {
+      this.layout.hidden['panel-synth'] = true;
+    } else {
       this.layout.hidden['panel-synth'] = false;
+      this.layout.settingsFloat = (mode === 'float');
     }
     this.saveLayout();
     this.applySettingsFloat();
-    this.applyTopVisibility(); // recompute the top-row grid + re-sync chip highlight
+    this.applyTopVisibility();
+  }
+
+  // Kept for the audio-settings modal's Docked/Floating dropdown.
+  setSettingsFloat(on: boolean) { this.setSettingsMode(on ? 'float' : 'dock'); }
+
+  settingsMenu(): MenuItem[] {
+    const shown = this._settingsShown();
+    const cur = !shown ? 'hidden' : (this.layout.settingsFloat ? 'float' : 'dock');
+    const item = (m: string, label: string): MenuItem => ({
+      label: (cur === m ? '● ' : '○ ') + label,
+      disabled: cur === m,
+      action: () => this.setSettingsMode(m),
+    });
+    return [item('float', 'フロート'), item('dock', 'ドック'), item('hidden', '非表示')];
   }
 
   applySettingsFloat() {
-    const float = !!this.layout.settingsFloat;
+    const shown = this._settingsShown();
+    const float = shown && !!this.layout.settingsFloat;
     document.body.classList.toggle('settings-float', float);
-    this._chips['tab-panel-synth']?.classList.toggle('active', float); // VIEW chip
+    this._chips['tab-panel-synth']?.classList.toggle('active', shown); // lit = shown
     const panel = document.getElementById('panel-synth');
     if (!panel) return;
+    // Hidden = display:none (the grid recompute in applyTopVisibility drops it).
+    if (panel.parentElement === document.getElementById('synth-main')) {
+      panel.style.display = shown ? '' : 'none';
+    }
     if (float) {
       this.ensureFloatHeader(panel);
       this.applyFloatPos(panel);
@@ -400,10 +428,10 @@ class PanelLayout {
     bottom.style.gridTemplateColumns = gridChildren.map(track).join(' ');
   }
 
-  // ✕ on a float window drops to the unit's resting state: tabs → hidden, EFFECTS
-  // → hidden, VCO/DRAWING → dock.
+  // ✕ on a float window hides the unit (OFF = hidden for everything; dock is a
+  // deliberate right-click choice).
   closeFloat(id: string) {
-    this.setTabMode(id, isFloatablePanel(id) ? panelOff(id) : 'hidden');
+    this.setTabMode(id, 'hidden');
   }
 
   ensureTabFloatWindow(id: string): HTMLElement {
@@ -421,8 +449,7 @@ class PanelLayout {
     header.innerHTML = `<span class="pfh-grip">⠿</span><span class="pfh-title">${label}</span>`;
     const close = document.createElement('button');
     close.className = 'pfh-close';
-    close.title = (isFloatablePanel(id) && panelOff(id) === 'dock')
-      ? 'ドックに戻す' : '非表示（ドックは右クリック→ドック）';
+    close.title = '非表示（ドックにするには右クリック→ドック）';
     close.textContent = '✕';
     close.addEventListener('click', () => this.closeFloat(id));
     header.appendChild(close);
@@ -483,12 +510,8 @@ class PanelLayout {
   }
 
   updateTabChip(id: string) {
-    const mode = this.getTabMode(id);
-    // Panels: lit whenever shown (docked OR floated) — VCO/DRAWING sit docked and
-    // should read as ON. Tabs: lit only when floated (docked tabs live in the
-    // strip and their chip staying lit would be noise).
-    const active = isFloatablePanel(id) ? (mode !== 'hidden') : (mode === 'float');
-    this._chips[`tab-${id}`]?.classList.toggle('active', active);
+    // Lit = shown (float OR dock); off = hidden. Uniform for tabs and panels.
+    this._chips[`tab-${id}`]?.classList.toggle('active', this.getTabMode(id) !== 'hidden');
   }
 
   // ===== PERSISTENCE =====
@@ -508,16 +531,21 @@ class PanelLayout {
       if (raw) {
         const parsed = JSON.parse(raw);
         const tabMode = parsed.tabMode || {};
-        // One-time migration for layouts saved before the unified float VIEW bar:
-        // adopt SETTINGS-floats-by-default so it doesn't open docked on old state.
+        const hidden = parsed.hidden || {};
+        // One-time migration for layouts saved before the unified float VIEW bar.
+        // New defaults: SETTINGS + ARP/EASE/PHASE/GLYPH + EFFECTS start hidden;
+        // only VCO/DRAWING stay docked-on. Only fill gaps the user hasn't set.
         const needsMigration = (parsed.v || 0) < LAYOUT_VERSION;
-        if (needsMigration && tabMode['panel-effects'] === undefined) {
-          tabMode['panel-effects'] = 'hidden';
+        if (needsMigration) {
+          DEFAULT_HIDDEN_UNITS.forEach(id => {
+            if (tabMode[id] === undefined) tabMode[id] = 'hidden';
+          });
+          hidden['panel-synth'] = true; // SETTINGS off by default
         }
         const result: LayoutData = {
           sizes: parsed.sizes || {},
           order: parsed.order || {},
-          hidden: parsed.hidden || this.defaultHidden(),
+          hidden,
           collapsed: parsed.collapsed || {},
           settingsFloat: needsMigration ? true : !!parsed.settingsFloat,
           settingsFloatPos: parsed.settingsFloatPos || null,
@@ -525,20 +553,21 @@ class PanelLayout {
           tabFloatPos: parsed.tabFloatPos || {},
           v: LAYOUT_VERSION,
         };
-        // Persist the migration so it's applied exactly once (later a user dock
-        // toggle saves settingsFloat:false + v, and won't be re-forced on reload).
+        // Persist the migration so it's applied exactly once.
         if (needsMigration) {
           try { localStorage.setItem(this.storageKey, JSON.stringify(result)); } catch (e) {}
         }
         return result;
       }
     } catch (e) {}
-    // Fresh install (no saved layout): SETTINGS starts FLOATING + visible, EFFECTS
-    // hidden, CENTER + its tabs docked.
+    // Fresh install: SETTINGS + ARP/EASE/PHASE/GLYPH + EFFECTS start hidden;
+    // VCO/DRAWING docked-on. (settingsFloat=true → shows as float once toggled on.)
+    const tabMode: Record<string, string> = {};
+    DEFAULT_HIDDEN_UNITS.forEach(id => { tabMode[id] = 'hidden'; });
     return {
-      sizes: {}, order: {}, hidden: {}, collapsed: {},
+      sizes: {}, order: {}, hidden: { 'panel-synth': true }, collapsed: {},
       settingsFloat: true, settingsFloatPos: null,
-      tabMode: { 'panel-effects': 'hidden' }, tabFloatPos: {}, v: LAYOUT_VERSION,
+      tabMode, tabFloatPos: {}, v: LAYOUT_VERSION,
     };
   }
 
@@ -752,13 +781,14 @@ class PanelLayout {
     label.textContent = 'VIEW';
     bar.appendChild(label);
 
-    // SETTINGS float chip — uses the settings-float mechanism (fixed-position
-    // overlay), not the move-into-window path, but presents the same way.
+    // SETTINGS chip — uses the settings-float mechanism, not the move-into-window
+    // path, but presents the same: ON = shown (floating), OFF = hidden.
     const sChip = document.createElement('button');
     sChip.className = 'panel-toggle-chip panel-toggle-chip-float';
     sChip.textContent = 'SETTINGS';
-    sChip.title = 'SETTINGS フロート / ドック（右クリックで切替）';
-    sChip.addEventListener('click', () => this.setSettingsFloat(!this.layout.settingsFloat));
+    sChip.title = 'SETTINGS 表示 / 非表示（右クリックでフロート/ドック/非表示）';
+    sChip.addEventListener('click', () =>
+      this.setSettingsMode(this._settingsShown() ? 'hidden' : 'float'));
     sChip.addEventListener('contextmenu', (e) => {
       e.preventDefault();
       e.stopPropagation();
@@ -768,16 +798,15 @@ class PanelLayout {
     bar.appendChild(sChip);
 
     // One float chip per floatable unit (tabs + panels). Left-click toggles
-    // float ↔ its resting state (tabs & EFFECTS → hidden; VCO/DRAWING → dock);
-    // right-click opens the full Float / Dock / 非表示 menu.
+    // SHOWN ↔ hidden (shown = float, except VCO/DRAWING which show docked);
+    // right-click opens the full フロート / ドック / 非表示 menu.
     const addFloatChip = (id: string, text: string) => {
-      const off = isFloatablePanel(id) ? panelOff(id) : 'hidden';
       const chip = document.createElement('button');
       chip.className = 'panel-toggle-chip panel-toggle-chip-float';
       chip.textContent = text;
-      chip.title = `${text} フロート / ${off === 'dock' ? 'ドック' : '非表示'}（右クリックで切替）`;
+      chip.title = `${text} 表示 / 非表示（右クリックでフロート/ドック/非表示）`;
       chip.addEventListener('click', () =>
-        this.setTabMode(id, this.getTabMode(id) === 'float' ? off : 'float'));
+        this.setTabMode(id, this.getTabMode(id) === 'hidden' ? shownMode(id) : 'hidden'));
       chip.addEventListener('contextmenu', (e) => {
         e.preventDefault();
         e.stopPropagation(); // don't also trigger the document-level menu handler
@@ -790,15 +819,6 @@ class PanelLayout {
     FLOATABLE_PANELS.forEach(({ id, label: text }) => addFloatChip(id, text));
 
     header.appendChild(bar);
-  }
-
-  // Float / Dock menu for the SETTINGS chip (right-click).
-  settingsMenu(): MenuItem[] {
-    const f = !!this.layout.settingsFloat;
-    return [
-      { label: (f ? '● ' : '○ ') + 'フロート', disabled: f, action: () => this.setSettingsFloat(true) },
-      { label: (!f ? '● ' : '○ ') + 'ドック', disabled: !f, action: () => this.setSettingsFloat(false) },
-    ];
   }
 
   togglePanel(id: string) {

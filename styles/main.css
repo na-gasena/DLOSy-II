@@ -2913,6 +2913,33 @@ body.settings-float #panel-synth > .panel-drag-grip {
   max-width: 100%;
 }
 
+/* Theme the float-window scrollbars to match the app's panels (the OS default
+   bar clashed with the theme). Matches #vco-loop-panel etc. */
+.tab-float,
+.tab-float * {
+  scrollbar-width: thin;
+  scrollbar-color: var(--border-panel) var(--bg-panel-inset);
+}
+.tab-float::-webkit-scrollbar,
+.tab-float *::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.tab-float::-webkit-scrollbar-track,
+.tab-float *::-webkit-scrollbar-track {
+  background: var(--bg-panel-inset);
+  border-radius: 3px;
+}
+.tab-float::-webkit-scrollbar-thumb,
+.tab-float *::-webkit-scrollbar-thumb {
+  background: var(--border-panel);
+  border-radius: 3px;
+}
+.tab-float::-webkit-scrollbar-thumb:hover,
+.tab-float *::-webkit-scrollbar-thumb:hover {
+  background: var(--accent-primary);
+}
+
 /* EASE graph: fill the float window's remaining height instead of its fixed
    240px, so the whole curve is visible (the backing store re-measures on the
    resulting size change). */
