@@ -16,6 +16,15 @@ import {
 // Breakpoint with optional per-segment curvature (see curve-editor.ts)
 type CurvePoint = CPoint;
 
+// Vertical (value) grid divisions for the curve editor + Y quantize. Editor-only
+// (doesn't affect playback), shared across voices, persisted. STEP is the
+// horizontal grid (transport.numSteps); this is its vertical counterpart.
+const VGRID_KEY = 'dlosy20_vgrid';
+let vGridDivs = (() => {
+  const s = parseInt(localStorage.getItem(VGRID_KEY) || '', 10);
+  return (s >= 1 && s <= 16) ? s : 4;
+})();
+
 interface VCOCurve {
   points: CurvePoint[];
   min: number;
@@ -96,6 +105,9 @@ class VCOLoop {
   // phase against each other. Applied in _warpPos().
   phaseOffset: number = 0;
   rate: number = 1;
+  // Grid quantize: when on, dragged/added control points snap to the editor grid
+  // (X → step columns = transport.numSteps; Y → the 4 horizontal divisions).
+  quantize: boolean = false;
   // Throttle state for live-drawing buffer refreshes (see refreshDrawingOsc).
   _drawRefreshLast: number = 0;
   _drawRefreshTrailingId: ReturnType<typeof setTimeout> | null = null;
@@ -710,13 +722,25 @@ class VCOLoop {
     }
   }
 
+  // Map a step index to its normalized curve position 0..1, spread across the FULL
+  // editor width: step 0 → 0 (left edge), last step → 1 (right edge). So the
+  // playhead sweeps the whole editor and the last grid column is a real, audible
+  // step. (The 1.0 endpoint is preserved in _warpPos, not folded back onto 0.)
+  _stepPhase(stepIndex: number, totalSteps: number): number {
+    return stepIndex / Math.max(1, totalSteps - 1);
+  }
+
   // Map a base bar position (0..1) through this voice's rate + phase offset, wrap
   // into 0..1, then through the (global) easing curve. This is what makes voices
   // play the same loop shifted/at different speeds so they "ずれて" against each other.
   _warpPos(basePos: number): number {
-    let p = basePos * this.rate + this.phaseOffset;
-    p = p % 1;
+    const raw = basePos * this.rate + this.phaseOffset;
+    let p = raw % 1;
     if (p < 0) p += 1;
+    // Keep the exact loop-END (raw == 1, i.e. the last step at rate 1) as 1 rather
+    // than folding it onto 0 — otherwise the final step would double the first and
+    // the playhead would never reach the right edge.
+    if (p === 0 && Math.abs(raw - 1) < 1e-9) p = 1;
     return vcoEase ? vcoEase.apply(p) : p;
   }
 
@@ -781,7 +805,7 @@ class VCOLoop {
       // STEP mode: discrete update with ADSR envelope.
       // Apply rate/phase warp then easing to the per-step sampled position so the
       // modulation curve is traversed (per voice) shifted/scaled and non-uniformly.
-      const easedPos = this._warpPos(stepIndex / totalSteps);
+      const easedPos = this._warpPos(this._stepPhase(stepIndex, totalSteps));
       this.playheadPosition = easedPos;
       // Reconstruct the step's real audio time from the perf-clock timestamp the
       // sequencer scheduled it for, so pitch + envelope land on the audio grid
@@ -804,7 +828,7 @@ class VCOLoop {
     // its endpoint instead of being chopped off → seamless, click-free retrigger.
     const now = (atTime !== undefined) ? atTime : ctx.currentTime;
 
-    const pos = (samplePos !== undefined) ? samplePos : stepIndex / totalSteps;
+    const pos = (samplePos !== undefined) ? samplePos : this._stepPhase(stepIndex, totalSteps);
     const vol = this.getValueAt('volume', pos) * this.masterVolume;
 
     // Calculate step duration（テンポは audioEngine.params.tempo が真実の値）
@@ -903,8 +927,9 @@ class VCOLoop {
       const elapsed = now - this.stepStartTime;
       const stepFraction = this.stepDuration > 0 ? Math.min(elapsed / this.stepDuration, 1) : 0;
 
-      // Linear phase 0..1 across the whole bar (loop cycle)
-      let linearPhase = (this.lastStepIndex + stepFraction) / this.lastTotalSteps;
+      // Linear phase 0..1 across the loop, matching STEP's step→phase mapping so
+      // the playhead sweeps the full editor width (last step lands on x=1).
+      let linearPhase = (this.lastStepIndex + stepFraction) / Math.max(1, this.lastTotalSteps - 1);
       if (linearPhase > 1) linearPhase = 1;
 
       // Apply this voice's rate/phase warp (wraps into 0..1) then the easing
@@ -989,9 +1014,14 @@ class VCOLoop {
           ${[0.25, 0.5, 1, 2, 4].map(r =>
             `<button class="vco-rate-btn${r === this.rate ? ' active' : ''}" data-rate="${r}">${r === 0.25 ? '¼' : r === 0.5 ? '½' : '×' + r}</button>`).join('')}
         </div>
+        <span class="label">STEP</span>
+        <input id="vco-steps" type="number" min="1" max="16" step="1" value="${transport.numSteps}" class="vco-steps-input" title="横グリッド：ループのステップ数（1〜16）" />
+        <span class="label">V</span>
+        <input id="vco-vgrid" type="number" min="1" max="16" step="1" value="${vGridDivs}" class="vco-vgrid-input" title="縦グリッド：値の分割数（1〜16）" />
       </div>
       <div class="vco-editor-controls">
         <button id="vco-reset-curve" class="small-btn">RESET</button>
+        <button id="vco-quantize" class="small-btn${this.quantize ? ' vco-on' : ''}" title="制御点をグリッドにスナップ（ON/OFF）">GRID</button>
         <span id="vco-cursor-info" class="vco-info"></span>
       </div>
     `;
@@ -1034,6 +1064,7 @@ class VCOLoop {
     } else {
       curve.points = preset.points!.map(p => ({x: p.x, y: p.y}));
     }
+    (curve as any)._tail = []; // fresh curve — drop any hidden overflow
     this.drawCurve();
   }
 
@@ -1041,6 +1072,7 @@ class VCOLoop {
     const curve = this.curves[this.activeParam];
     if (!curve) return;
     curve.points = curve.points.map(p => ({x: p.x, y: 1 - p.y}));
+    (curve as any)._tail = [];
     this.drawCurve();
   }
 
@@ -1048,7 +1080,42 @@ class VCOLoop {
     const curve = this.curves[this.activeParam];
     if (!curve) return;
     curve.points = curve.points.map(p => ({x: 1 - p.x, y: p.y})).reverse();
+    (curve as any)._tail = [];
     this.drawCurve();
+  }
+
+  // Random curve with peaks placed ON (or OFF) the beat. Derives the beat from the
+  // current STEP count (≈4 beats/loop): strong beats fall on `k % beat === 0`, the
+  // off-beats halfway between. On-beat → peaks on the strong beats (valleys on the
+  // off-beats); off-beat → the reverse. Values stay random, so it's "random, but
+  // locked to the groove". One point per step (last at x=1 = the last step).
+  _randomBeat(onbeat: boolean) {
+    const curve = this.curves[this.activeParam];
+    if (!curve) return;
+    const N = Math.max(1, transport.numSteps);
+    const denom = Math.max(1, N - 1);
+    const beat = Math.max(1, Math.round(N / 4)); // steps per beat (~4 beats/loop)
+    const half = Math.max(1, Math.round(beat / 2)); // off-beat offset within a beat
+    const rand = (lo: number, hi: number) => lo + Math.random() * (hi - lo);
+    // One point per step at its sample position k/(N-1) (last at x=1) so each step
+    // gets its value exactly.
+    const pts: CurvePoint[] = [];
+    for (let k = 0; k < N; k++) {
+      const inBeat = k % beat;
+      const strong = inBeat === 0;   // on the beat
+      const off = inBeat === half;   // the "&" between beats
+      const peak = onbeat ? strong : off;
+      const valley = onbeat ? off : strong;
+      let y: number;
+      if (peak) y = rand(0.6, 1.0);        // accent
+      else if (valley) y = rand(0.0, 0.25); // rest
+      else y = rand(0.2, 0.5);              // in-between subdivisions
+      pts.push({ x: k / denom, y });
+    }
+    curve.points = pts;
+    (curve as any)._tail = []; // fresh pattern — drop any hidden overflow
+    this.drawCurve();
+    emit('state:changed');
   }
 
   buildParamTabs() {
@@ -1108,6 +1175,25 @@ class VCOLoop {
     flipH.title = 'Flip Horizontal';
     flipH.addEventListener('click', () => this.flipHorizontal());
     presetRow.appendChild(flipH);
+
+    // Separator + on-beat / off-beat random (peaks placed on / off the beat grid).
+    const sep2 = document.createElement('span');
+    sep2.style.cssText = 'width:1px;height:18px;background:var(--border-panel);margin:0 4px;align-self:center;';
+    presetRow.appendChild(sep2);
+
+    const onBeatBtn = document.createElement('button');
+    onBeatBtn.className = 'vco-preset-btn';
+    onBeatBtn.textContent = '🎲ON';
+    onBeatBtn.title = 'オンビート・ランダム（拍に山）';
+    onBeatBtn.addEventListener('click', () => this._randomBeat(true));
+    presetRow.appendChild(onBeatBtn);
+
+    const offBeatBtn = document.createElement('button');
+    offBeatBtn.className = 'vco-preset-btn';
+    offBeatBtn.textContent = '🎲OFF';
+    offBeatBtn.title = 'オフビート・ランダム（裏に山）';
+    offBeatBtn.addEventListener('click', () => this._randomBeat(false));
+    presetRow.appendChild(offBeatBtn);
   }
 
   initCanvas() {
@@ -1193,6 +1279,9 @@ class VCOLoop {
         tgt.classList.add('active');
         const mode = tgt.dataset.mode;
         this.continuousMode = (mode === 'cont');
+        // Curvature handles are CONT-only — drop any hover/drag state on switch.
+        this._hoverSeg = null;
+        this._handleDrag = null;
 
         // Show/hide ADSR tab (STEP mode only)
         // If switching to CONT while ADSR tab is selected, fall back to frequency
@@ -1254,6 +1343,40 @@ class VCOLoop {
       } else {
         curve.points = [{x: 0, y: 0.5}, {x: 1, y: 0.5}];
       }
+      (curve as any)._tail = []; // fresh curve — drop any hidden overflow
+      this.drawCurve();
+    });
+
+    // GRID quantize toggle
+    this._el('vco-quantize')?.addEventListener('click', () => {
+      this.quantize = !this.quantize;
+      this._el('vco-quantize')?.classList.toggle('vco-on', this.quantize);
+      emit('state:changed');
+    });
+
+    // STEP count — the loop length (global transport.numSteps, 1..16). All voice
+    // editors share it, so mirror the value into every STEP input on change.
+    this._el('vco-steps')?.addEventListener('change', () => {
+      const input = this._el('vco-steps') as HTMLInputElement | null;
+      if (!input) return;
+      const oldN = Math.max(1, transport.numSteps); // before the change
+      const n = Math.max(1, Math.min(16, Math.round(parseInt(input.value, 10) || 16)));
+      transport.numSteps = n;
+      try { localStorage.setItem('dlosy20_numSteps', String(n)); } catch (e) {}
+      document.querySelectorAll<HTMLInputElement>('.vco-steps-input').forEach(el => { el.value = String(n); });
+      // Re-fit every curve to the new step count by SLOT INDEX (see method).
+      this._resnapToGrid(oldN);
+      this.drawCurve();
+    });
+
+    // Vertical (value) grid divisions — editor + Y-quantize aid (1..16).
+    this._el('vco-vgrid')?.addEventListener('change', () => {
+      const input = this._el('vco-vgrid') as HTMLInputElement | null;
+      if (!input) return;
+      const v = Math.max(1, Math.min(16, Math.round(parseInt(input.value, 10) || 4)));
+      vGridDivs = v;
+      try { localStorage.setItem(VGRID_KEY, String(v)); } catch (e) {}
+      document.querySelectorAll<HTMLInputElement>('.vco-vgrid-input').forEach(el => { el.value = String(v); });
       this.drawCurve();
     });
 
@@ -1296,21 +1419,23 @@ class VCOLoop {
     ctx.fillStyle = '#1c1c20';
     ctx.fillRect(0, 0, w, h);
 
-    // Grid lines (step markers)
+    // Grid: one line per STEP, spread across the full width — step 0 at the left
+    // edge, the last step at the right edge (x=1). No extra trailing line/cell.
     const numSteps = transport.numSteps;
+    const gdenom = Math.max(1, numSteps - 1);
     ctx.strokeStyle = '#2a2a32';
     ctx.lineWidth = 1;
-    for (let i = 0; i <= numSteps; i++) {
-      const x = pad + (i / numSteps) * (w - pad * 2);
+    for (let i = 0; i < numSteps; i++) {
+      const x = pad + (i / gdenom) * (w - pad * 2);
       ctx.beginPath();
       ctx.moveTo(x, 0);
       ctx.lineTo(x, h);
       ctx.stroke();
     }
 
-    // Horizontal grid
-    for (let i = 0; i <= 4; i++) {
-      const y = pad + (i / 4) * (h - pad * 2);
+    // Horizontal grid (value divisions — adjustable via the V input).
+    for (let i = 0; i <= vGridDivs; i++) {
+      const y = pad + (i / vGridDivs) * (h - pad * 2);
       ctx.beginPath();
       ctx.moveTo(0, y);
       ctx.lineTo(w, y);
@@ -1340,16 +1465,18 @@ class VCOLoop {
     ctx.stroke();
     ctx.shadowBlur = 0;
 
-    // Curvature handles — revealed on hover (or while dragging), plus a subtle
-    // hint on already-bent segments.
-    drawHandles(
-      ctx, pts,
-      (x) => pad + x * (w - pad * 2),
-      (y) => pad + (1 - y) * (h - pad * 2),
-      { activeSeg: this._handleDrag ?? this._hoverSeg },
-    );
+    // Curvature handles — CONT mode only (STEP has no meaningful segment curve).
+    // Revealed on hover / while dragging, plus a subtle hint on bent segments.
+    if (this.continuousMode) {
+      drawHandles(
+        ctx, pts,
+        (x) => pad + x * (w - pad * 2),
+        (y) => pad + (1 - y) * (h - pad * 2),
+        { activeSeg: this._handleDrag ?? this._hoverSeg },
+      );
+    }
 
-    // Draw points
+    // Draw points (including the last step's point at the right edge).
     pts.forEach((pt) => {
       const x = pad + pt.x * (w - pad * 2);
       const y = pad + (1 - pt.y) * (h - pad * 2);
@@ -1411,24 +1538,97 @@ class VCOLoop {
     return -1;
   }
 
+  // Snap a normalized (0..1) coordinate to the editor grid (X → step columns,
+  // Y → the 4 horizontal divisions) when quantize is enabled.
+  _snapCoords(x: number, y: number) {
+    if (!this.quantize) return { x, y };
+    const denom = Math.max(1, transport.numSteps - 1); // step columns (k/(N-1), last at x=1)
+    const vy = Math.max(1, vGridDivs);                 // value rows
+    return { x: Math.round(x * denom) / denom, y: Math.round(y * vy) / vy };
+  }
+
+  // Re-fit every curve to the new STEP count by SLOT INDEX, non-destructively.
+  // Each point lives on a grid slot (column). When the step count changes, a point
+  // keeps its slot and just slides to that slot's new position slot/(newN-1). Slots
+  // beyond the new range are parked in a per-curve tail (hidden, NOT deleted) and
+  // restored when the count grows again — so reducing then raising STEP round-trips
+  // exactly. For a step-dense curve, genuinely-new end columns get a fresh point;
+  // sparse curves are left as-is (no pollution). `oldN` is the count before change.
+  _resnapToGrid(oldN: number) {
+    const newN = Math.max(1, transport.numSteps);
+    const oldDenom = Math.max(1, oldN - 1);
+    const newDenom = Math.max(1, newN - 1);
+    Object.keys(this.curves).forEach(key => {
+      // ADSR is a per-note amplitude envelope (time WITHIN one step), not a loop /
+      // step pattern — resnapping it would wreck the envelope (and collapse it to
+      // y=0 at low step counts → silence). Leave it untouched.
+      if (key === 'adsr') return;
+      const curve = this.curves[key] as any; // curve + optional _tail buffer
+      const oldPoints: CurvePoint[] = curve.points;
+      const tail: any[] = curve._tail || [];
+      const dense = oldPoints.length >= oldN; // ~one point per slot = step pattern
+
+      // Map every known point (active + hidden tail) to its slot (column) index.
+      const bySlot = new Map<number, CurvePoint>();
+      oldPoints.forEach(p => bySlot.set(Math.round(p.x * oldDenom), p));
+      tail.forEach((p: any) => {
+        const slot = (p._slot != null) ? p._slot : Math.round(p.x * oldDenom);
+        if (!bySlot.has(slot)) bySlot.set(slot, p);
+      });
+
+      const active: CurvePoint[] = [];
+      for (let slot = 0; slot < newN; slot++) {
+        const p = bySlot.get(slot);
+        if (p) {
+          const np: any = { ...p, x: slot / newDenom };
+          delete np._slot;
+          active.push(np);
+        } else if (dense && slot >= oldN) {
+          // new end column on a dense pattern → add a point at the curve's value.
+          active.push({ x: slot / newDenom, y: evalCurve(oldPoints, slot / newDenom) });
+        }
+        // else: pre-existing empty slot (sparse curve) → stays empty
+      }
+      // Park slots beyond the new range (retain their slot for a later restore).
+      const newTail: any[] = [];
+      bySlot.forEach((p, slot) => { if (slot >= newN) newTail.push({ ...p, _slot: slot }); });
+
+      if (active.length >= 1) { curve.points = active; curve._tail = newTail; }
+    });
+    this.drawCurve();
+  }
+
   onCanvasMouseDown(e: MouseEvent) {
     const coords = this.getCanvasCoords(e);
     const curve = this.curves[this.activeParam];
-    // Curvature handle first (it sits on the curve between points)
-    const seg = hitHandlePx(curve.points, coords,
-      this.canvas!.width - 16, this.canvas!.height - 16);
-    if (seg >= 0) {
-      this._handleDrag = seg;
-      return;
+    // Curvature handle (bend a segment). Only in CONT mode — in STEP mode the
+    // curve is sampled at discrete steps, so segment curvature is meaningless.
+    if (this.continuousMode) {
+      const seg = hitHandlePx(curve.points, coords,
+        this.canvas!.width - 16, this.canvas!.height - 16);
+      if (seg >= 0) {
+        this._handleDrag = seg;
+        return;
+      }
     }
     const idx = this.findPointAt(coords);
     if (idx >= 0) {
       this.draggingPoint = idx;
     } else {
-      // Add new point
-      curve.points.push({ x: coords.x, y: coords.y });
-      curve.points.sort((a, b) => a.x - b.x);
-      this.draggingPoint = curve.points.findIndex(p => p.x === coords.x && p.y === coords.y);
+      // Add new point (snapped to the grid when quantize is on).
+      const snapped = this._snapCoords(coords.x, coords.y);
+      // Quantize guard: never stack two points on the same grid column (duplicate
+      // x breaks the x-sorted interpolation). If the column is taken, grab that
+      // point and move it to the clicked value instead of adding a duplicate.
+      const dupe = curve.points.findIndex(p => Math.abs(p.x - snapped.x) < 1e-6);
+      if (dupe >= 0) {
+        curve.points[dupe].y = snapped.y;
+        this.draggingPoint = dupe;
+      } else {
+        curve.points.push({ x: snapped.x, y: snapped.y });
+        curve.points.sort((a, b) => a.x - b.x);
+        this.draggingPoint = curve.points.findIndex(p => p.x === snapped.x && p.y === snapped.y);
+      }
       this.drawCurve();
     }
   }
@@ -1452,8 +1652,9 @@ class VCOLoop {
     }
 
     if (this.draggingPoint === null) {
-      // Hover reveal: show the handle only for the segment under the cursor
-      const seg = segmentAtX(this.curves[this.activeParam].points, coords.x);
+      // Hover reveal: show the curvature handle for the segment under the cursor —
+      // CONT mode only (STEP has no meaningful segment curvature).
+      const seg = this.continuousMode ? segmentAtX(this.curves[this.activeParam].points, coords.x) : null;
       if (seg !== this._hoverSeg) { this._hoverSeg = seg; this.drawCurve(); }
       return;
     }
@@ -1468,12 +1669,32 @@ class VCOLoop {
       tx = pt.x + (coords.x - pt.x) * 0.1;
       ty = pt.y + (coords.y - pt.y) * 0.1;
     }
+    // Grid quantize (skipped under Alt fine-drag so precise nudging still works).
+    if (!e.altKey) {
+      const snapped = this._snapCoords(tx, ty);
+      tx = snapped.x; ty = snapped.y;
+    }
 
     // First and last points: lock X position.
     // Middle points: clamp X between the neighbors so a point can never cross
     // them (crossing broke the x-sorted assumption and the curve stopped
     // rendering). Moving back re-enters the normal range automatically.
     if (this.draggingPoint === 0 || this.draggingPoint === curve.points.length - 1) {
+      // First and last points are the first and last STEPS (distinct) — lock X,
+      // move Y freely. The loop wraps last-step → first-step like a sequencer.
+      pt.y = ty;
+    } else if (this.quantize && !e.altKey) {
+      // Quantized middle point: land on a grid column STRICTLY between the two
+      // neighbours' columns, so two points can never share a column (which would
+      // duplicate x and break interpolation). No free column → X stays, Y moves.
+      const denom = Math.max(1, transport.numSteps - 1);
+      const prevCol = Math.round(curve.points[this.draggingPoint - 1].x * denom);
+      const nextCol = Math.round(curve.points[this.draggingPoint + 1].x * denom);
+      if (nextCol - prevCol >= 2) {
+        let col = Math.round(tx * denom);
+        col = Math.max(prevCol + 1, Math.min(nextCol - 1, col));
+        pt.x = col / denom;
+      }
       pt.y = ty;
     } else {
       const eps = 0.004;
@@ -1588,6 +1809,7 @@ class VCOLoop {
       enabled: this.enabled,
       phaseOffset: this.phaseOffset,
       rate: this.rate,
+      quantize: this.quantize,
       curves,
       activePattern: this.activePattern,
       patternBank: this.patternBank.map(p => p ? JSON.parse(JSON.stringify(p)) : null),
@@ -1604,6 +1826,7 @@ class VCOLoop {
     if (state.enabled !== undefined) this.enabled = state.enabled;
     if (state.phaseOffset !== undefined) this.phaseOffset = state.phaseOffset;
     if (state.rate !== undefined) this.rate = state.rate;
+    if (state.quantize !== undefined) this.quantize = state.quantize;
     Object.entries(state.curves).forEach(([key, saved]: [string, any]) => {
       if (this.curves[key]) {
         this.curves[key].points = copyPoints(saved.points);
@@ -1651,6 +1874,11 @@ class VCOLoop {
     this._all('.vco-rate-btn').forEach(b => {
       b.classList.toggle('active', parseFloat(b.dataset.rate ?? '1') === this.rate);
     });
+    this._el('vco-quantize')?.classList.toggle('vco-on', this.quantize);
+    const stepsInput = this._el('vco-steps') as HTMLInputElement | null;
+    if (stepsInput) stepsInput.value = String(transport.numSteps);
+    const vgridInput = this._el('vco-vgrid') as HTMLInputElement | null;
+    if (vgridInput) vgridInput.value = String(vGridDivs);
   }
 }
 

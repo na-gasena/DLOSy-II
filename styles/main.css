@@ -890,6 +890,19 @@ body {
   margin-bottom: 6px;
 }
 
+.draw-lissajous-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 6px;
+  flex-wrap: wrap;
+}
+.draw-lissajous-row .small-btn {
+  padding: 2px 8px;
+  font-size: 11px;
+  line-height: 1.3;
+}
+
 .draw-slot-tab {
   padding: 3px 10px;
   font-family: var(--font-mono);
@@ -1594,6 +1607,18 @@ body.top-collapsed .panel-resize-handle.row-handle {
   color: #000;
   border-color: var(--accent-cyan);
   font-weight: bold;
+}
+.vco-steps-input,
+.vco-vgrid-input {
+  width: 42px;
+  padding: 2px 4px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-align: center;
+  background: var(--bg-panel-inset);
+  border: 1px solid var(--border-panel);
+  color: var(--text-primary);
+  border-radius: var(--control-radius);
 }
 
 /* ===== EFFECTS PANEL ===== */

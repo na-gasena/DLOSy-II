@@ -37,6 +37,12 @@ class TransportClock {
   }
 
   init() {
+    // Restore the saved loop length (STEP count) chosen in the VCO editor.
+    try {
+      const saved = parseInt(localStorage.getItem('dlosy20_numSteps') || '', 10);
+      if (saved >= 1 && saved <= 16) this.numSteps = saved;
+    } catch (e) {}
+
     document.getElementById('btn-play')?.addEventListener('click', () => {
       audioEngine.resume();
       audioEngine.init().then(() => this.togglePlay());
@@ -155,8 +161,9 @@ class TransportClock {
   // Fan the current step out to Drawing Mode + VCO Loop (what the sequencer used
   // to do on each step, minus the removed note/drum triggers).
   tick(midiTimestamp?: number) {
-    // Auto-cycle Drawing slots (Draw 1→2→…→8→1)
-    if (drawingMode) drawingMode.advanceSlot();
+    // Auto-cycle Drawing slots (Draw 1→2→…→8→1); pass the step so LOOP SYNC can
+    // restart the drawing cycle on the loop head (step 0).
+    if (drawingMode) drawingMode.advanceSlot(this.currentStep);
 
     // Update VCO Loop playhead and apply parameters
     if (vcoLoop) {
